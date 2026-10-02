@@ -39,7 +39,7 @@ fn install_signal_cleanup() -> io::Result<()> {
 const HELP: &str = "ma [OPTIONS] [PROMPT]\n\
 One model. One tool. One loop.\n\n\
   --base-url URL       API root; appends /chat/completions\n\
-  --api-key KEY        Prefer MA_API_KEY environment variable\n\
+  --api-key KEY        Prefer API_KEY environment variable\n\
   --model MODEL       Model name\n\
   --write             Allow obvious writes within startup cwd and descendants\n\
   --net               Allow shell network commands (model HTTP is always allowed)\n\
@@ -50,7 +50,7 @@ One model. One tool. One loop.\n\n\
   --                  Treat remaining arguments as prompt\n\
   -h, --help          Show help\n\
   --version           Show version\n\n\
-Environment: MA_BASE_URL, MA_API_KEY, MA_MODEL; OPENAI_* fallbacks.\n\
+Environment: BASE_URL, MODEL, API_KEY.\n\
 Default base URL: https://api.openai.com/v1. Model and key are required.\n\
 Piped stdin supplements the prompt; stdin alone is also accepted (max 1 MiB).\n\
 stdout: final answer only. stderr: errors. Exit: 0 success, 1 runtime, 2 input, 3 step limit.\n\
@@ -79,12 +79,6 @@ struct Config {
     policy: Policy,
 }
 
-fn env_value(primary: &str, fallback: &str) -> String {
-    std::env::var(primary)
-        .or_else(|_| std::env::var(fallback))
-        .unwrap_or_default()
-}
-
 fn positive(value: &str, name: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
@@ -95,9 +89,9 @@ fn positive(value: &str, name: &str) -> Result<u64, String> {
 
 fn parse_config() -> Result<Config, String> {
     let mut c = Config {
-        base_url: env_value("MA_BASE_URL", "OPENAI_BASE_URL"),
-        api_key: env_value("MA_API_KEY", "OPENAI_API_KEY"),
-        model: env_value("MA_MODEL", "OPENAI_MODEL"),
+        base_url: std::env::var("BASE_URL").unwrap_or_default(),
+        api_key: std::env::var("API_KEY").unwrap_or_default(),
+        model: std::env::var("MODEL").unwrap_or_default(),
         prompt: String::new(),
         max_steps: 200,
         http_timeout: Duration::from_secs(120),
@@ -174,10 +168,10 @@ fn parse_config() -> Result<Config, String> {
         );
     }
     if c.api_key.trim().is_empty() || c.api_key.chars().any(char::is_control) {
-        return Err("provide a valid --api-key or MA_API_KEY".into());
+        return Err("provide a valid --api-key or API_KEY".into());
     }
     if c.model.trim().is_empty() {
-        return Err("provide --model or MA_MODEL".into());
+        return Err("provide --model or MODEL".into());
     }
     c.prompt = prompts.join(" ");
     if !io::stdin().is_terminal() {
@@ -726,7 +720,7 @@ fn run_shell(command: &str, c: &Config) -> Value {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    for key in ["MA_API_KEY", "OPENAI_API_KEY", "CDPATH"] {
+    for key in ["API_KEY", "MA_API_KEY", "OPENAI_API_KEY", "CDPATH"] {
         cmd.env_remove(key);
     }
     // Block termination while spawning so the handler cannot miss a newly created tool group.
@@ -896,15 +890,69 @@ fn preserve_metadata(target: &mut Value, source: &Value, known: &[&str]) -> Resu
     Ok(())
 }
 
+enum ModelError {
+    ContextTooLong,
+    Other(String),
+}
+
+impl From<String> for ModelError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for ModelError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
+    }
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextTooLong => f.write_str("model context too long"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+fn model_error(error: &Value) -> ModelError {
+    let explicit_code = ["code", "type"].iter().any(|key| {
+        matches!(
+            error[*key].as_str(),
+            Some("context_length_exceeded" | "context_window_exceeded")
+        )
+    });
+    let message = error["message"]
+        .as_str()
+        .or_else(|| error.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let explicit_message = [
+        "context length exceeded",
+        "context window exceeded",
+        "exceeds the context window",
+    ]
+    .iter()
+    .any(|phrase| message.contains(phrase))
+        || (message.contains("maximum context length")
+            && (message.contains("exceed") || message.contains("you requested")));
+    if explicit_code || explicit_message {
+        ModelError::ContextTooLong
+    } else {
+        ModelError::Other("model reported an error".into())
+    }
+}
+
 fn merge_chunk(
     message: &mut Value,
     finish: &mut Value,
     chunk: &Value,
     c: &Config,
     text_started: &mut bool,
-) -> Result<(), String> {
-    if chunk.get("error").is_some_and(|e| !e.is_null()) {
-        return Err("model reported an error in stream".into());
+) -> Result<(), ModelError> {
+    if let Some(error) = chunk.get("error").filter(|e| !e.is_null()) {
+        return Err(model_error(error));
     }
     let choices = chunk["choices"]
         .as_array()
@@ -1047,7 +1095,7 @@ fn sse_line(
     }
 }
 
-fn read_stream(reader: impl Read, c: &Config) -> Result<Value, String> {
+fn read_stream(reader: impl Read, c: &Config) -> Result<Value, ModelError> {
     let mut reader = BufReader::new(reader.take(RESPONSE_LIMIT + 1));
     let mut line = Vec::new();
     let mut data = String::new();
@@ -1100,7 +1148,7 @@ fn read_stream(reader: impl Read, c: &Config) -> Result<Value, String> {
     result
 }
 
-fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Value, String> {
+fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Value, ModelError> {
     let body = json!({"model":c.model, "messages":messages, "stream":true, "tools":[{
         "type":"function", "function":{"name":"shell", "description":"Execute a literal /bin/sh command in the workspace under the fixed permissions. Returns stdout, stderr, exit_code, timed_out, truncated or error.",
         "parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}}
@@ -1111,7 +1159,18 @@ fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Val
         .send_json(body)
         .map_err(|e| format!("model HTTP request: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("model HTTP status {}", response.status()));
+        let status = response.status();
+        // Only explicit context errors on input-related statuses trigger recovery.
+        // Bound error bodies independently and never print upstream payloads or credentials.
+        if matches!(status.as_u16(), 400 | 413 | 422) {
+            let error: Result<Value, _> = response.body_mut().with_config().limit(8192).read_json();
+            if error
+                .is_ok_and(|body| matches!(model_error(&body["error"]), ModelError::ContextTooLong))
+            {
+                return Err(ModelError::ContextTooLong);
+            }
+        }
+        return Err(format!("model HTTP status {status}").into());
     }
     let streaming = response
         .headers()
@@ -1133,6 +1192,9 @@ fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Val
         .limit(RESPONSE_LIMIT)
         .read_json()
         .map_err(|e| format!("model response JSON: {e}"))?;
+    if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+        return Err(model_error(error));
+    }
     if let Some(text) = response
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -1145,9 +1207,40 @@ fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Val
     Ok(response)
 }
 
+fn trim_history(messages: &mut Vec<Value>) -> Option<usize> {
+    let turns: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .skip(2)
+        .filter_map(|(i, message)| (message["role"] == "assistant").then_some(i))
+        .collect();
+    if turns.len() < 2 {
+        return None; // Keep the original task and at least the latest complete tool turn.
+    }
+    let bytes = |slice: &[Value]| slice.iter().map(|m| m.to_string().len()).sum::<usize>();
+    let target = bytes(&messages[2..]) / 2;
+    let mut removed_bytes = bytes(&messages[2..turns[0]]);
+    let mut removed_turns = 0;
+    let mut end = turns[1];
+    for pair in turns.windows(2) {
+        removed_bytes += bytes(&messages[pair[0]..pair[1]]);
+        removed_turns += 1;
+        end = pair[1];
+        if removed_bytes >= target {
+            break;
+        }
+    }
+    // Each assistant tool call and all of its tool results are removed together.
+    // This also replaces a previous notice, avoiding accumulation across recoveries.
+    messages.drain(2..end);
+    messages.insert(2, json!({"role":"user", "content":"Earlier execution records were removed after a context-limit error. The original task and recent records remain. Do not assume earlier commands succeeded or repeat side effects without checking the current workspace state. Continue the original task, rechecking files when needed."}));
+    Some(removed_turns)
+}
+
 fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(c.http_timeout))
+        .http_status_as_error(false)
         .max_redirects(0)
         .max_idle_connections(0)
         .build()
@@ -1156,13 +1249,46 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
         json!({"role":"system", "content":c.policy.instruction()}),
         json!({"role":"user", "content":c.prompt}),
     ];
-    for step in 0..c.max_steps {
-        trace(
-            c,
-            format_args!("model step {}/{}: requesting", step + 1, c.max_steps),
-        );
+    let mut requests = 0;
+    while requests < c.max_steps {
         let started = Instant::now();
-        let response = call_model(&agent, c, &messages).map_err(|e| (1, e))?;
+        let mut retried = false;
+        let response = loop {
+            requests += 1;
+            trace(
+                c,
+                format_args!("model step {requests}/{}: requesting", c.max_steps),
+            );
+            match call_model(&agent, c, &messages) {
+                Ok(response) => break response,
+                Err(ModelError::ContextTooLong) => {
+                    if retried {
+                        return Err((
+                            1,
+                            "model context too long after history trimming; retry failed".into(),
+                        ));
+                    }
+                    if requests == c.max_steps {
+                        return Err((
+                            3,
+                            format!(
+                                "max_steps ({}) reached before context recovery",
+                                c.max_steps
+                            ),
+                        ));
+                    }
+                    let removed = trim_history(&mut messages).ok_or_else(|| (1, "model context too long; no old complete turns can be removed while preserving the original task and latest turn".into()))?;
+                    trace(
+                        c,
+                        format_args!(
+                            "context too long: removed {removed} old turn(s); retrying model once"
+                        ),
+                    );
+                    retried = true;
+                }
+                Err(error) => return Err((1, error.to_string())),
+            }
+        };
         trace(
             c,
             format_args!(
@@ -1214,7 +1340,7 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
                 return Err((1, "model returned duplicate tool call ids".into()));
             }
         }
-        if step + 1 == c.max_steps {
+        if requests == c.max_steps {
             return Err((
                 3,
                 format!("max_steps ({}) reached before a final answer", c.max_steps),

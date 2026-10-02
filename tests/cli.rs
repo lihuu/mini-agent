@@ -31,6 +31,9 @@ impl Drop for Workspace {
 fn cli() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_ma"));
     for name in [
+        "BASE_URL",
+        "API_KEY",
+        "MODEL",
         "MA_BASE_URL",
         "MA_API_KEY",
         "MA_MODEL",
@@ -200,7 +203,7 @@ fn run_wire(
             "--http-timeout",
             "3",
         ])
-        .env("MA_API_KEY", "test-key")
+        .env("API_KEY", "test-key")
         .args(flags)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -402,7 +405,7 @@ fn shell_output_is_bounded_and_api_key_is_not_inherited() {
                 "200 OK",
                 tools(&[
                     ("large", "yes x | head -c 100000"),
-                    ("secret", "printenv MA_API_KEY"),
+                    ("secret", "printenv API_KEY"),
                 ]),
             ),
             ("200 OK", final_response("done")),
@@ -757,7 +760,7 @@ fn http_timeout_ends_a_stalled_model_request_without_stdout() {
     let started = Instant::now();
     let out = cli()
         .current_dir(&ws.0)
-        .env("MA_API_KEY", "test-key")
+        .env("API_KEY", "test-key")
         .args([
             "--base-url",
             &url,
@@ -1022,7 +1025,7 @@ fn verbose_stream_text_is_visible_before_upstream_finishes() {
     });
     let mut child = cli()
         .current_dir(&ws.0)
-        .env("MA_API_KEY", "test-key")
+        .env("API_KEY", "test-key")
         .args(["--base-url", &url, "--model", "test-model", "-v", "inspect"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1293,5 +1296,293 @@ fn conflicting_stream_metadata_fails_before_tools_execute() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("conflicting model stream metadata"));
     assert!(out.stdout.is_empty());
+    assert!(!ws.0.join("never").exists());
+}
+
+#[test]
+fn configuration_reads_simple_environment_names_and_ignores_legacy_names() {
+    let ws = Workspace::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_request(&mut stream);
+                    let body = final_response("done").to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    return Some(request);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return None;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+    });
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("BASE_URL", url)
+        .env("MODEL", "simple-model")
+        .env("API_KEY", "test-key")
+        .env("MA_BASE_URL", "invalid-old-url")
+        .env("MA_MODEL", "old-model")
+        .env("MA_API_KEY", "old-key")
+        .env("OPENAI_BASE_URL", "invalid-old-url")
+        .env("OPENAI_MODEL", "old-model")
+        .env("OPENAI_API_KEY", "old-key")
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let request = server.join().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"done\n");
+    assert_eq!(request.unwrap()["model"], "simple-model");
+    let old = cli()
+        .env("MA_MODEL", "old-model")
+        .env("MA_API_KEY", "old-key")
+        .env("OPENAI_MODEL", "old-model")
+        .env("OPENAI_API_KEY", "old-key")
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(old.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&old.stderr).contains("API_KEY"));
+}
+
+fn context_error() -> Value {
+    json!({"error":{"code":"context_length_exceeded","message":"Too many input tokens"}})
+}
+
+#[test]
+fn context_limit_trims_complete_old_turns_without_reexecuting_shell() {
+    let ws = Workspace::new();
+    let (out, req) = run(
+        vec![
+            (
+                "200 OK",
+                tools(&[
+                    ("old-one", "printf x >> count"),
+                    ("old-two", "printf older"),
+                ]),
+            ),
+            ("200 OK", tools(&[("recent", "printf y >> count")])),
+            ("400 Bad Request", context_error()),
+            ("200 OK", final_response("done")),
+        ],
+        &["-v", "--write", "--max-steps", "4", "original task"],
+        "",
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"done\n");
+    assert_eq!(std::fs::read(ws.0.join("count")).unwrap(), b"xy");
+    assert_eq!(req.len(), 4);
+    assert_eq!(req[3]["messages"][0], req[2]["messages"][0]);
+    assert_eq!(req[3]["messages"][1], req[2]["messages"][1]);
+    let retry = req[3]["messages"].as_array().unwrap();
+    assert_eq!(retry.len(), 5);
+    assert_eq!(retry[2]["role"], "user");
+    assert!(retry[2]["content"].as_str().unwrap().contains("removed"));
+    assert_eq!(retry[3], req[2]["messages"][5]);
+    assert_eq!(retry[4], req[2]["messages"][6]);
+    assert_eq!(req[3]["tools"], req[2]["tools"]);
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("context too long"));
+    assert!(log.contains("removed 1 old turn"));
+}
+
+#[test]
+fn context_recovery_preserves_recent_multi_tool_turn_and_can_recur() {
+    let ws = Workspace::new();
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&[("old", "printf old")])),
+            (
+                "200 OK",
+                tools(&[("one", "printf one"), ("two", "printf two")]),
+            ),
+            ("400 Bad Request", context_error()),
+            ("200 OK", tools(&[("new", "printf new")])),
+            ("400 Bad Request", context_error()),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(req.len(), 6);
+    let first_retry = req[3]["messages"].as_array().unwrap();
+    assert_eq!(
+        &first_retry[3..],
+        &req[2]["messages"].as_array().unwrap()[4..]
+    );
+    assert_eq!(first_retry[3]["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(first_retry[4]["tool_call_id"], "one");
+    assert_eq!(first_retry[5]["tool_call_id"], "two");
+    let next_retry = req[5]["messages"].as_array().unwrap();
+    assert_eq!(next_retry.len(), 5);
+    assert_eq!(next_retry[3]["tool_calls"][0]["id"], "new");
+    assert_eq!(next_retry[4]["tool_call_id"], "new");
+    assert_eq!(out.stdout, b"done\n");
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn context_recovery_retries_once_and_other_http_errors_never_trim() {
+    let ws = Workspace::new();
+    for (status, error, retries) in [
+        ("400 Bad Request", context_error(), 1),
+        ("413 Payload Too Large", context_error(), 1),
+        (
+            "400 Bad Request",
+            json!({"error":{"code":"invalid_request_error","message":"invalid tools"}}),
+            0,
+        ),
+        (
+            "400 Bad Request",
+            json!({"error":{"code":"rate_limit_exceeded","message":"token limit exceeded"}}),
+            0,
+        ),
+        ("401 Unauthorized", context_error(), 0),
+        ("429 Too Many Requests", context_error(), 0),
+        ("500 Internal Server Error", context_error(), 0),
+    ] {
+        let mut replies = vec![
+            ("200 OK", tools(&[("old", "printf old")])),
+            ("200 OK", tools(&[("recent", "printf recent")])),
+            (status, error.clone()),
+        ];
+        if retries > 0 {
+            replies.push((status, error));
+        }
+        let (out, req) = run(replies, &["inspect"], "", &ws);
+        assert_eq!(out.status.code(), Some(1), "{status}");
+        assert!(out.stdout.is_empty());
+        assert_eq!(req.len(), 3 + retries, "{status}");
+        if retries > 0 {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("after history trimming"));
+        } else {
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains(status.split(' ').next().unwrap())
+            );
+        }
+    }
+}
+
+#[test]
+fn context_error_without_old_turns_exits_clearly() {
+    let ws = Workspace::new();
+    for turns in 0..=1 {
+        let mut replies = Vec::new();
+        if turns == 1 {
+            replies.push(("200 OK", tools(&[("recent", "printf recent")])));
+        }
+        replies.push(("400 Bad Request", context_error()));
+        let (out, req) = run(replies, &["inspect"], "", &ws);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+        assert_eq!(req.len(), turns + 1);
+        assert!(String::from_utf8_lossy(&out.stderr).contains("no old complete turns"));
+    }
+}
+
+#[test]
+fn context_retry_counts_toward_max_steps_and_never_executes_last_tools() {
+    let ws = Workspace::new();
+    for max in [3, 4] {
+        let mut replies = vec![
+            ("200 OK", tools(&[("old", "printf old")])),
+            ("200 OK", tools(&[("recent", "printf recent")])),
+            ("400 Bad Request", context_error()),
+        ];
+        if max == 4 {
+            replies.push(("200 OK", tools(&[("never", "touch never")])));
+        }
+        let (out, req) = run(
+            replies,
+            &["--write", "--max-steps", &max.to_string(), "inspect"],
+            "",
+            &ws,
+        );
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(req.len(), max);
+        assert!(out.stdout.is_empty());
+        assert!(!ws.0.join("never").exists());
+    }
+}
+
+#[test]
+fn context_error_detection_requires_explicit_upstream_signal() {
+    let ws = Workspace::new();
+    for error in [
+        json!({"error":{"type":"context_window_exceeded"}}),
+        json!({"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 9000 tokens."}}),
+        json!({"error":{"message":"Input exceeds the context window"}}),
+    ] {
+        let (out, _) = run(vec![("400 Bad Request", error)], &["inspect"], "", &ws);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("no old complete turns"));
+    }
+}
+
+#[test]
+fn context_stream_error_recovers_without_executing_partial_tool_calls() {
+    let ws = Workspace::new();
+    let (out, req) = run_wire(
+        vec![
+            ("200 OK", Reply::Json(tools(&[("old", "printf old")]))),
+            ("200 OK", Reply::Json(tools(&[("recent", "printf recent")]))),
+            (
+                "200 OK",
+                sse(
+                    &[
+                        chunk(
+                            json!({"tool_calls":[{"index":0,"id":"never","function":{"name":"shell","arguments":"{\"command\":\"touch never\"}"}}]}),
+                            Value::Null,
+                        ),
+                        context_error(),
+                    ],
+                    false,
+                ),
+            ),
+            (
+                "200 OK",
+                sse(&[chunk(json!({"content":"done"}), json!("stop"))], true),
+            ),
+        ],
+        &["--write", "inspect"],
+        "",
+        &ws,
+        None,
+        |_| {},
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(req.len(), 4);
+    assert_eq!(out.stdout, b"done\n");
     assert!(!ws.0.join("never").exists());
 }

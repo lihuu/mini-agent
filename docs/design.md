@@ -15,7 +15,7 @@
 
 ## 运行契约
 
-- `--base-url`/`MA_BASE_URL`、`--api-key`/`MA_API_KEY`、`--model`/`MA_MODEL`；同时接受通用 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL` 环境变量作为后备。
+- `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；只读取这三个环境变量，无命名前缀或旧名称后备。
 - Base URL 是 API 根目录，例如 `https://example.com/v1`，客户端追加 `/chat/completions`。
 - Prompt 来自位置参数；非终端 stdin 作为补充文本，也支持仅 stdin。限制输入为 1 MiB；shell stdin 固定关闭，避免交互等待。
 - stdout 只输出完整 final；stderr 输出本地错误。`--verbose` / `-v` 实时追加模型文本、轮次、shell 命令、工具输出及结果。默认关闭过程日志，不引入日志框架或配置文件。成功退出 0，参数/输入错误 2，HTTP/协议错误 1，耗尽步数 3。
@@ -28,7 +28,7 @@
 - SIGINT / SIGTERM / SIGHUP 中断时清理当前工具进程组，按 `128 + signal` 退出；SIGKILL 和脱离进程组的进程不作强保证。
 - 工具结果采用 JSON 字符串，包含 stdout、stderr、exit_code、timed_out、truncated；拒绝和执行错误也作为工具结果反馈模型。
 - 多工具调用按返回顺序执行并逐条反馈。assistant 消息（含 reasoning_content 等兼容字段）保留；校验工具 ID、工具名、参数和最终 finish_reason，防止错误结束或执行未知工具。
-- 无自动 HTTP 重试，避免重复成本和模糊执行状态。
+- 普通 HTTP 错误不重试；只有明确上下文过长错误触发按完整轮次裁剪旧历史，保留 system、原始 user 和最新工具轮次。尽量移除约一半历史字节，插入可替换的裁剪提示，然后重试模型一次；不重放 shell，重试计入 max_steps。无可裁剪历史或重试仍失败则退出。不做主动裁剪、模型摘要、tokenizer 或新配置。
 
 ## 验收
 
