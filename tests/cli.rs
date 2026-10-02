@@ -880,6 +880,52 @@ fn streaming_tool_arguments_and_reasoning_survive_interleaved_calls() {
 }
 
 #[test]
+fn streaming_accepts_ollama_style_reasoning_field() {
+    let ws = Workspace::new();
+    // Ollama-compatible gateways stream reasoning under `reasoning`, not `reasoning_content`.
+    let (out, req) = run_wire(
+        vec![
+            (
+                "200 OK",
+                sse(
+                    &[
+                        chunk(
+                            json!({"role":"assistant","reasoning":"we need ","tool_calls":[{"index":0,"id":"one","type":"function","function":{"name":"shell","arguments":"{\"command\":\"printf hi\"}"}}]}),
+                            Value::Null,
+                        ),
+                        chunk(json!({"reasoning":"to check"}), json!("tool_calls")),
+                    ],
+                    true,
+                ),
+            ),
+            (
+                "200 OK",
+                sse(
+                    &[
+                        chunk(json!({"content":"done"}), Value::Null),
+                        chunk(json!({}), json!("stop")),
+                    ],
+                    true,
+                ),
+            ),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+        None,
+        |_| {},
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(req[1]["messages"][2]["reasoning"], "we need to check");
+    assert_eq!(result(&req[1], 3)["stdout"], "hi");
+    assert_eq!(out.stdout, b"done\n");
+}
+
+#[test]
 fn incomplete_or_malformed_streams_never_print_final_or_execute_tools() {
     let ws = Workspace::new();
     let call = chunk(

@@ -929,7 +929,10 @@ fn merge_chunk(
     {
         return Err("model stream role must be assistant".into());
     }
-    for key in ["content", "reasoning_content", "refusal"] {
+    // Providers disagree on the streaming reasoning field name: DeepSeek/vLLM send
+    // reasoning_content, Ollama-compatible gateways send reasoning. Both carry incremental
+    // text and must be accumulated; treating either as opaque metadata makes it conflict.
+    for key in ["content", "reasoning_content", "reasoning", "refusal"] {
         append_fragment(&mut message[key], delta.get(key))?;
     }
     preserve_metadata(
@@ -939,6 +942,7 @@ fn merge_chunk(
             "role",
             "content",
             "reasoning_content",
+            "reasoning",
             "refusal",
             "tool_calls",
         ],
