@@ -1,0 +1,27 @@
+[package]
+name = "mini-agent"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "One model. One tool. One loop."
+license = "MIT"
+repository = "https://github.com/lihuu/mini-agent"
+readme = "README.md"
+keywords = ["agent", "llm", "cli", "openai", "shell"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "ma"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
