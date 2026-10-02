@@ -26,7 +26,7 @@ export API_KEY='your-key'
 ./target/release/ma -v '分析当前项目'
 ```
 
-`BASE_URL` 填 API 根地址，程序会追加 `/chat/completions`；默认是 `https://api.openai.com/v1`。模型和密钥必须提供，只读取这三个环境变量。
+`BASE_URL` 填 API 根地址，程序会追加 `/chat/completions`；默认是 `https://api.openai.com/v1`。模型和密钥必须提供；这三个值也可以写进配置文件（见下）。
 
 ## 用法
 
@@ -65,7 +65,21 @@ git diff | ./target/release/ma '总结这些修改'
 | `--http-timeout` | 单次模型请求超时，秒 | `120` |
 | `--shell-timeout` | 单次 shell 命令超时，秒 | `30` |
 
-完整帮助：`./target/release/ma --help`。参数优先于环境变量。
+完整帮助：`./target/release/ma --help`。优先级：命令行 > 环境变量 > 配置文件。
+
+## 配置文件
+
+默认读取 `~/.config/ma/config.json`（遵循 `XDG_CONFIG_HOME`），也可用 `MA_CONFIG` 指定其他路径：
+
+```json
+{
+  "base_url": "http://localhost:11434/v1",
+  "api_key": "ollama",
+  "model": "gemma4:cloud"
+}
+```
+
+只支持 `base_url`、`api_key`、`model` 三个键，未知键直接报错。**权限不能由配置文件授予**（`write` / `net` 会被拒绝），只能来自命令行。含 `api_key` 的文件必须不能被同组或其他用户读取（`chmod 600`），否则拒绝启动。
 
 ## 权限边界
 

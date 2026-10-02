@@ -4,7 +4,9 @@
 
 ## 配置与输入
 
-使用 `BASE_URL`、`MODEL`、`API_KEY` 配置模型，也支持 `--base-url`、`--model`、`--api-key` 参数（密钥建议通过环境变量传递）。只读取这三个环境变量，参数优先。默认 API 根目录为 `https://api.openai.com/v1`，客户端追加 `/chat/completions`，不要传入完整接口路径。
+使用 `BASE_URL`、`MODEL`、`API_KEY` 配置模型，也支持 `--base-url`、`--model`、`--api-key` 参数（密钥建议通过环境变量传递）。只读取这三个环境变量。默认 API 根目录为 `https://api.openai.com/v1`，客户端追加 `/chat/completions`，不要传入完整接口路径。
+
+优先级：命令行参数 > 环境变量 > 配置文件。配置文件默认位于 `~/.config/ma/config.json`（遵循 `XDG_CONFIG_HOME`），可用 `MA_CONFIG` 指向其他路径；显式路径不存在会直接报错。文件必须是 JSON 对象，只接受 `base_url`、`api_key`、`model` 三个字符串键；未知键、非字符串值或非对象都会报错，不静默忽略。**权限不能写入配置文件**：`write` / `net` 会被拒绝，权限只能由命令行授予。含 `api_key` 的配置文件必须不能被同组或其他用户读取，否则拒绝启动并提示 `chmod 600`。
 
 Prompt 可为一个或多个位置参数；管道 stdin 提供补充上下文，也可以只从 stdin 提供任务。输入必须是 UTF-8，合并后最多 1 MiB。Prompt 以 `-` 开头时使用 `--` 分隔。
 
@@ -49,7 +51,7 @@ verbose 会在 stderr 显示模型文本片段，最后在 stdout 输出一次�
 | `--net` | 允许 | 拒绝 | 允许 |
 | `--write --net` | 允许 | 启动时 cwd 及其子目录 | 允许 |
 
-模型 API 请求始终允许，与 shell 的 `--net` 分开。系统可执行文件和运行所需的系统资源仍可使用。V0 不支持配置文件或额外授权目录。
+模型 API 请求始终允许，与 shell 的 `--net` 分开。系统可执行文件和运行所需的系统资源仍可使用。不支持额外授权目录。
 
 同一份 Policy 生成模型指令并执行 Guard 检查。Guard 拦截常见写命令、文件重定向、明显网络命令；检查文字路径中的父目录、已有符号链接和常见输出选项。`/dev/null` 是可用输出目标，文件描述符重定向如 `>&2` 可用。
 

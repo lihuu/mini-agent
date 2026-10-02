@@ -40,6 +40,7 @@ fn cli() -> Command {
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
+        "MA_CONFIG",
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "ALL_PROXY",
@@ -49,6 +50,12 @@ fn cli() -> Command {
     ] {
         c.env_remove(name);
     }
+    // Keep the default config location empty so a test never reads the developer's real
+    // ~/.config/ma/config.json; config tests opt in through MA_CONFIG.
+    c.env(
+        "XDG_CONFIG_HOME",
+        std::env::temp_dir().join(format!("ma-test-no-config-{}", std::process::id())),
+    );
     c
 }
 
@@ -128,18 +135,12 @@ enum Reply {
     Sse(Vec<Vec<u8>>),
 }
 
-fn run_wire(
+fn serve(
+    listener: TcpListener,
     responses: Vec<(&'static str, Reply)>,
-    flags: &[&str],
-    input: &str,
-    workspace: &Workspace,
-    env: Option<(&str, &std::ffi::OsStr)>,
-    after_spawn: impl FnOnce(&mut std::process::Child),
-) -> (Output, Vec<Value>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+) -> thread::JoinHandle<Vec<Value>> {
     listener.set_nonblocking(true).unwrap();
-    let url = format!("http://{}/v1/", listener.local_addr().unwrap());
-    let server = thread::spawn(move || {
+    thread::spawn(move || {
         let mut requests = Vec::new();
         for (status, body) in responses {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -188,7 +189,20 @@ fn run_wire(
             }
         }
         requests
-    });
+    })
+}
+
+fn run_wire(
+    responses: Vec<(&'static str, Reply)>,
+    flags: &[&str],
+    input: &str,
+    workspace: &Workspace,
+    env: Option<(&str, &std::ffi::OsStr)>,
+    after_spawn: impl FnOnce(&mut std::process::Child),
+) -> (Output, Vec<Value>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/", listener.local_addr().unwrap());
+    let server = serve(listener, responses);
     let mut command = cli();
     if let Some((key, value)) = env {
         command.env(key, value);
@@ -1585,4 +1599,151 @@ fn context_stream_error_recovers_without_executing_partial_tool_calls() {
     assert_eq!(req.len(), 4);
     assert_eq!(out.stdout, b"done\n");
     assert!(!ws.0.join("never").exists());
+}
+
+fn write_config(workspace: &Workspace, body: &str, private: bool) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workspace.0.join("cfg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    std::fs::write(&path, body).unwrap();
+    let mode = if private { 0o600 } else { 0o644 };
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+    path
+}
+
+#[test]
+fn config_file_supplies_connection_settings() {
+    let ws = Workspace::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = serve(
+        listener,
+        vec![("200 OK", Reply::Json(final_response("done")))],
+    );
+    let config = write_config(
+        &ws,
+        &format!(r#"{{"base_url":"{url}","api_key":"test-key","model":"config-model"}}"#),
+        true,
+    );
+    // Without endpoint flags or environment, a served request can only come from the file.
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("MA_CONFIG", &config)
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let requests = server.join().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(requests[0]["model"], "config-model");
+    assert_eq!(out.stdout, b"done\n");
+}
+
+#[test]
+fn environment_overrides_config_file() {
+    let ws = Workspace::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = serve(
+        listener,
+        vec![("200 OK", Reply::Json(final_response("done")))],
+    );
+    // The config points at a dead port; only the environment can make this test reach the mock.
+    let config = write_config(
+        &ws,
+        r#"{"base_url":"http://127.0.0.1:1/v1","api_key":"test-key","model":"config-model"}"#,
+        true,
+    );
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("MA_CONFIG", &config)
+        .env("BASE_URL", &url)
+        .env("MODEL", "env-model")
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let requests = server.join().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(requests[0]["model"], "env-model");
+}
+
+#[test]
+fn config_file_rejects_permissions_unknown_keys_and_shapes() {
+    let ws = Workspace::new();
+    for (body, needle) in [
+        (r#"{"write":true}"#, "permissions are not configurable"),
+        (r#"{"net":true}"#, "permissions are not configurable"),
+        (r#"{"baseUrl":"x"}"#, "unknown key"),
+        (r#"{"max_steps":5}"#, "unknown key"),
+        (r#"{"model":42}"#, "must be a string"),
+        (r#"["x"]"#, "must be a JSON object"),
+        (r#"{"model":"m""#, "config"),
+    ] {
+        let config = write_config(&ws, body, true);
+        let out = cli()
+            .current_dir(&ws.0)
+            .env("MA_CONFIG", &config)
+            .arg("inspect")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{body}: {stderr}");
+        assert!(out.stdout.is_empty(), "{body}");
+        assert!(stderr.contains(needle), "{body} -> {stderr}");
+    }
+}
+
+#[test]
+fn config_file_with_api_key_must_be_private() {
+    let ws = Workspace::new();
+    let config = write_config(&ws, r#"{"api_key":"test-key"}"#, false);
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("MA_CONFIG", &config)
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("chmod 600"), "{stderr}");
+    // The same content is accepted once the mode is private; it then fails on the missing model.
+    let config = write_config(&ws, r#"{"api_key":"test-key"}"#, true);
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("MA_CONFIG", &config)
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(!stderr.contains("chmod 600"), "{stderr}");
+    assert!(stderr.contains("MODEL"), "{stderr}");
+}
+
+#[test]
+fn missing_explicit_config_path_is_an_error() {
+    let ws = Workspace::new();
+    let out = cli()
+        .current_dir(&ws.0)
+        .env("MA_CONFIG", ws.0.join("absent.json"))
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("config"), "{stderr}");
 }

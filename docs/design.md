@@ -9,16 +9,17 @@
 - macOS、Linux 为 V0 目标。Windows 暂不实现。无 Session、Memory、MCP、Skills、Planner、Provider 抽象、GUI、常驻后台工作。
 - 同步 HTTP；少量普通函数，产品代码集中在 `src/main.rs`。
 - 默认 workspace read、write deny、shell network deny。模型 HTTP 请求不受 shell 网络开关影响。
-- 用户已明确：`--write` 只授予启动时当前工作目录及其子目录的写权限。V0 不读取配置文件，不增加自定义授权目录。
+- 用户已明确：`--write` 只授予启动时当前工作目录及其子目录的写权限。不增加自定义授权目录。
+- 配置文件只提供连接设置（`base_url`、`api_key`、`model`），默认 `~/.config/ma/config.json`，可用 `MA_CONFIG` 覆盖；权限永远不能来自配置文件。
 - 权限在启动时确定，运行中绝不询问或升级权限。同一 Policy 产生模型指令并驱动 Guard。
 - Guard 拦截明显违规，包含常见写命令和重定向的路径检查；使用 canonical path 检查已存在的路径与符号链接。未知 executable、程序内部副作用及 shell 动态计算不能被可靠静态判断，因此不是 OS Sandbox。
 
 ## 运行契约
 
-- `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；只读取这三个环境变量，无命名前缀或旧名称后备。
+- `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；只读取这三个环境变量，无命名前缀或旧名称后备。配置文件以更低的优先级提供同样的三个键。
 - Base URL 是 API 根目录，例如 `https://example.com/v1`，客户端追加 `/chat/completions`。
 - Prompt 来自位置参数；非终端 stdin 作为补充文本，也支持仅 stdin。限制输入为 1 MiB；shell stdin 固定关闭，避免交互等待。
-- stdout 只输出完整 final；stderr 输出本地错误。`--verbose` / `-v` 实时追加模型文本、轮次、shell 命令、工具输出及结果。默认关闭过程日志，不引入日志框架或配置文件。成功退出 0，参数/输入错误 2，HTTP/协议错误 1，耗尽步数 3。
+- stdout 只输出完整 final；stderr 输出本地错误。`--verbose` / `-v` 实时追加模型文本、轮次、shell 命令、工具输出及结果。默认关闭过程日志，不引入日志框架。成功退出 0，参数/输入错误 2，HTTP/协议错误 1，耗尽步数 3。
 - `max_steps` 默认 200，指模型请求次数。最后一步不再执行无法反馈给模型的工具调用。
 - 请求 `stream: true`；SSE 按事件而非传输 chunk 解析，支持 UTF-8、开头 BOM、LF/CRLF/CR、心跳及 usage-only chunk。content、reasoning_content、refusal 和按 index 区分的工具参数分别累积；额外字段保留并递归合并对象，冲突值按协议错误退出。`finish_reason` 和 `[DONE]` 必须均出现才认可完整响应。完整接收、校验后执行工具；断流不输出 partial final，也不执行部分工具。整个响应仍限 4 MiB，HTTP timeout 覆盖流式读取。verbose 输出为 best-effort，管道写满时不等待，以免影响请求读取和 shell 超时。
 - HTTP timeout 默认 120 秒，shell timeout 默认 30 秒。可用启动参数调整，必须大于零。

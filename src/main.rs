@@ -51,10 +51,12 @@ One model. One tool. One loop.\n\n\
   -h, --help          Show help\n\
   --version           Show version\n\n\
 Environment: BASE_URL, MODEL, API_KEY.\n\
+Config: ~/.config/ma/config.json or MA_CONFIG; command line wins over both.\n\
 Default base URL: https://api.openai.com/v1. Model and key are required.\n\
 Piped stdin supplements the prompt; stdin alone is also accepted (max 1 MiB).\n\
 stdout: final answer only. stderr: errors. Exit: 0 success, 1 runtime, 2 input, 3 step limit.\n\
-Permissions are best-effort command checks, NOT an OS security sandbox.\n";
+Permissions are best-effort command checks, NOT an OS security sandbox.\n\
+Permissions cannot be granted by the config file; use --write / --net.\n";
 
 struct Policy {
     workspace: PathBuf,
@@ -87,11 +89,115 @@ fn positive(value: &str, name: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{name} must be an integer in 1..86400"))
 }
 
+const CONFIG_LIMIT: usize = 64 * 1024;
+const CONFIG_KEYS: [&str; 3] = ["base_url", "api_key", "model"];
+
+fn config_path() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("MA_CONFIG") {
+        if !explicit.is_empty() {
+            return Some(PathBuf::from(explicit));
+        }
+    }
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|home| PathBuf::from(home).join(".config"))
+        })?;
+    Some(base.join("ma").join("config.json"))
+}
+
+// A config file may supply connection settings only. Permissions stay on the command line,
+// so a stray or checked-in file can never grant write or network access.
+fn load_config() -> Result<Value, String> {
+    let explicit = std::env::var("MA_CONFIG").ok().filter(|v| !v.is_empty());
+    let Some(path) = config_path() else {
+        return Ok(Value::Null);
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound && explicit.is_none() => {
+            return Ok(Value::Null);
+        }
+        Err(e) => return Err(format!("config {}: {e}", path.display())),
+    };
+    if bytes.len() > CONFIG_LIMIT {
+        return Err(format!(
+            "config {} exceeds {CONFIG_LIMIT} bytes",
+            path.display()
+        ));
+    }
+    let text =
+        String::from_utf8(bytes).map_err(|_| format!("config {} must be UTF-8", path.display()))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+    let Some(object) = value.as_object() else {
+        return Err(format!("config {} must be a JSON object", path.display()));
+    };
+    for (key, value) in object {
+        if matches!(key.as_str(), "write" | "net") {
+            return Err(format!(
+                "config {}: permissions are not configurable; use --write or --net",
+                path.display()
+            ));
+        }
+        if !CONFIG_KEYS.contains(&key.as_str()) {
+            return Err(format!("config {}: unknown key {key:?}", path.display()));
+        }
+        if !value.is_string() {
+            return Err(format!(
+                "config {}: {key:?} must be a string",
+                path.display()
+            ));
+        }
+    }
+    #[cfg(unix)]
+    if object.contains_key("api_key") {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .map_err(|e| format!("config {}: {e}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "config {} holds api_key but is readable by group/other (mode {:03o}); run: chmod 600 {}",
+                path.display(),
+                mode & 0o777,
+                path.display()
+            ));
+        }
+    }
+    Ok(value)
+}
+
+fn config_value(file: &Value, key: &str) -> String {
+    file.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_default()
+}
+
+// Command line wins over environment, environment wins over the config file.
+fn setting(name: &str, file: &Value, key: &str) -> String {
+    let env = std::env::var(name).unwrap_or_default();
+    if env.is_empty() {
+        config_value(file, key)
+    } else {
+        env
+    }
+}
+
 fn parse_config() -> Result<Config, String> {
+    let file = load_config()?;
     let mut c = Config {
-        base_url: std::env::var("BASE_URL").unwrap_or_default(),
-        api_key: std::env::var("API_KEY").unwrap_or_default(),
-        model: std::env::var("MODEL").unwrap_or_default(),
+        base_url: setting("BASE_URL", &file, "base_url"),
+        api_key: setting("API_KEY", &file, "api_key"),
+        model: setting("MODEL", &file, "model"),
         prompt: String::new(),
         max_steps: 200,
         http_timeout: Duration::from_secs(120),
@@ -168,10 +274,10 @@ fn parse_config() -> Result<Config, String> {
         );
     }
     if c.api_key.trim().is_empty() || c.api_key.chars().any(char::is_control) {
-        return Err("provide a valid --api-key or API_KEY".into());
+        return Err("provide --api-key, API_KEY, or \"api_key\" in the config file".into());
     }
     if c.model.trim().is_empty() {
-        return Err("provide --model or MODEL".into());
+        return Err("provide --model, MODEL, or \"model\" in the config file".into());
     }
     c.prompt = prompts.join(" ");
     if !io::stdin().is_terminal() {
