@@ -1747,3 +1747,342 @@ fn missing_explicit_config_path_is_an_error() {
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("config"), "{stderr}");
 }
+
+#[test]
+fn readonly_globs_expand_inside_workspace() {
+    let ws = Workspace::new();
+    std::fs::write(ws.0.join("a.rs"), "alpha\n").unwrap();
+    std::fs::write(ws.0.join("b.rs"), "beta\n").unwrap();
+    std::fs::create_dir(ws.0.join("src")).unwrap();
+    std::fs::write(ws.0.join("src/c.rs"), "nested\n").unwrap();
+    let commands = [
+        ("cat", "cat *.rs"),
+        ("wc", "wc -l *.rs"),
+        ("ls", "ls ./*.rs"),
+        ("nested", "cat */*.rs"),
+        ("bracket", "cat [ab].rs"),
+        ("question", "cat ?.rs"),
+    ];
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&commands)),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    for index in 3..9 {
+        let tool = result(&req[1], index);
+        assert!(
+            tool.get("error").is_none(),
+            "{}: {tool}",
+            commands[index - 3].1
+        );
+        assert_eq!(tool["exit_code"], 0);
+    }
+    assert_eq!(result(&req[1], 3)["stdout"], "alpha\nbeta\n");
+    assert_eq!(result(&req[1], 6)["stdout"], "nested\n");
+}
+
+#[test]
+fn readonly_globs_keep_path_boundaries_and_writes_literal() {
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let outside = Workspace::new();
+    std::fs::write(outside.0.join("secret.rs"), "secret").unwrap();
+    symlink(outside.0.join("secret.rs"), ws.0.join("escape.rs")).unwrap();
+    symlink(&outside.0, ws.0.join("escape-dir")).unwrap();
+    let commands = [
+        ("link", "cat *.rs"),
+        ("directory", "cat */*.rs"),
+        ("parent", "cat ../*.rs"),
+        ("dots", "cat .*/secret.rs"),
+        ("write", "rm *.rs"),
+        ("redirect", "printf nope > *.rs"),
+    ];
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&commands)),
+            ("200 OK", final_response("done")),
+        ],
+        &["--write", "inspect"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    for index in 3..9 {
+        let tool = result(&req[1], index);
+        assert!(
+            tool["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("permission denied")),
+            "{}: {tool}",
+            commands[index - 3].1
+        );
+        assert_eq!(tool["stdout"], "");
+    }
+    assert_eq!(
+        std::fs::read_to_string(outside.0.join("secret.rs")).unwrap(),
+        "secret"
+    );
+    assert!(ws.0.join("escape.rs").is_symlink());
+}
+
+#[test]
+fn readonly_glob_matching_respects_quoted_metacharacters() {
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let outside = Workspace::new();
+    std::fs::write(ws.0.join("a[1].rs"), "literal\n").unwrap();
+    std::fs::write(outside.0.join("secret.rs"), "secret").unwrap();
+    symlink(outside.0.join("secret.rs"), ws.0.join("b[1].rs")).unwrap();
+    let (out, req) = run(
+        vec![
+            (
+                "200 OK",
+                tools(&[("literal", "cat 'a[1]'*.rs"), ("escape", "cat 'b[1]'*.rs")]),
+            ),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    assert_eq!(result(&req[1], 3)["stdout"], "literal\n");
+    assert!(
+        result(&req[1], 4)["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside workspace")
+    );
+}
+
+#[test]
+fn readonly_globs_check_shell_quote_rules_and_option_separator() {
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let outside = Workspace::new();
+    std::fs::write(outside.0.join("secret"), "secret").unwrap();
+    for name in ["a.rs", "].rs", "a\\q.rs", "a\\*.rs", "-escape.rs", "你.rs"] {
+        symlink(outside.0.join("secret"), ws.0.join(name)).unwrap();
+    }
+    std::fs::create_dir(ws.0.join("local:")).unwrap();
+    symlink(outside.0.join("secret"), ws.0.join("local:/escape.rs")).unwrap();
+    let commands = [
+        ("negation", "cat [\"!\"a].rs"),
+        ("closing", "cat [a\"]\"].rs"),
+        ("backslash", r#"cat "a\q"*.rs"#),
+        ("star", r#"cat "a\*"*.rs"#),
+        ("option", "cat -- -*.rs"),
+        ("option-literal", "cat -- -escape.rs"),
+        ("wc", "wc -l -- -*.rs"),
+        ("unicode", "cat ?.rs"),
+        ("colon", "cat local://*.rs"),
+    ];
+    let (out, req) = run_with_env(
+        vec![
+            ("200 OK", tools(&commands)),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+        Some(("LC_ALL", std::ffi::OsStr::new("C.UTF-8"))),
+    );
+    assert!(out.status.success());
+    for (index, (_, command)) in commands.iter().enumerate() {
+        let tool = result(&req[1], index + 3);
+        assert!(
+            tool["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("permission denied")),
+            "{command}: {tool}"
+        );
+        assert_eq!(tool["stdout"], "", "{command}");
+    }
+}
+
+#[test]
+fn readonly_question_glob_matches_unicode_names() {
+    let ws = Workspace::new();
+    std::fs::write(ws.0.join("你.rs"), "unicode\n").unwrap();
+    let (out, req) = run_with_env(
+        vec![
+            ("200 OK", tools(&[("unicode", "cat ?.rs")])),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+        Some(("LC_ALL", std::ffi::OsStr::new("C.UTF-8"))),
+    );
+    assert!(out.status.success());
+    assert_eq!(result(&req[1], 3)["stdout"], "unicode\n");
+    assert_eq!(result(&req[1], 3)["exit_code"], 0);
+    let outside = Workspace::new();
+    std::fs::write(outside.0.join("secret"), "secret").unwrap();
+    std::fs::remove_file(ws.0.join("你.rs")).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("secret"), ws.0.join("你.rs")).unwrap();
+    let (_, req) = run_with_env(
+        vec![
+            ("200 OK", tools(&[("unicode", "cat ?.rs")])),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+        Some(("LC_ALL", std::ffi::OsStr::new("C.UTF-8"))),
+    );
+    assert!(
+        result(&req[1], 3)["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("outside workspace"))
+    );
+    assert_eq!(result(&req[1], 3)["stdout"], "");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn invalid_locale_cannot_silently_change_guard_glob_matching() {
+    let output = cli()
+        .env_remove("LC_ALL")
+        .env("LANG", "C.UTF-8")
+        .env("LC_TIME", "ma_invalid_locale")
+        .arg("inspect")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid locale"));
+    let help = cli()
+        .env("LC_ALL", "ma_invalid_locale")
+        .args(["prompt", "--help"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(help.stdout.starts_with(b"ma [OPTIONS]"));
+}
+
+#[test]
+fn readonly_globs_check_literal_fallback_and_quoted_collation() {
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let outside = Workspace::new();
+    std::fs::write(outside.0.join("secret.rs"), "secret").unwrap();
+    symlink(outside.0.join("secret.rs"), ws.0.join("[ab].rs")).unwrap();
+    symlink(&outside.0, ws.0.join("[ab]")).unwrap();
+    symlink(outside.0.join("secret.rs"), ws.0.join("a].rs")).unwrap();
+    std::fs::create_dir(ws.0.join("a")).unwrap();
+    std::fs::write(ws.0.join("b"), "file").unwrap();
+    symlink(&outside.0, ws.0.join("[bc]")).unwrap();
+    let commands = [
+        ("literal", "cat [ab].rs"),
+        ("directory", "cat [ab]/secret.rs"),
+        ("collation", r#"cat [["."a"."]].rs"#),
+        ("leading-close", r#"cat []"!"a].rs"#),
+        ("slash", "ls [bc]/"),
+        ("dot", "ls [bc]/."),
+        ("parent", "ls [bc]/.."),
+    ];
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&commands)),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    for (index, (_, command)) in commands.iter().enumerate() {
+        let tool = result(&req[1], index + 3);
+        assert!(
+            tool["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("permission denied")),
+            "{command}: {tool}"
+        );
+        assert_eq!(tool["stdout"], "");
+    }
+}
+
+#[test]
+fn literal_braces_are_not_shell_grouping_and_find_diagnostic_is_precise() {
+    let ws = Workspace::new();
+    let (out, req) = run(
+        vec![
+            (
+                "200 OK",
+                tools(&[
+                    ("literal", "printf '%s' {}"),
+                    ("find", "find . -exec cat {} +"),
+                    ("group", "{ touch never; }"),
+                ]),
+            ),
+            ("200 OK", final_response("done")),
+        ],
+        &["--write", "inspect"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    assert_eq!(result(&req[1], 3)["stdout"], "{}");
+    let find = result(&req[1], 4);
+    let error = find["error"].as_str().unwrap();
+    assert!(error.contains("find") && error.contains("-exec"), "{error}");
+    assert!(!error.contains("grouping"), "{error}");
+    assert!(
+        result(&req[1], 5)["error"]
+            .as_str()
+            .unwrap()
+            .contains("grouping")
+    );
+    assert!(!ws.0.join("never").exists());
+}
+
+#[test]
+fn help_and_version_work_after_prompt_but_not_as_values_or_after_separator() {
+    for flag in ["--help", "-h", "--version"] {
+        let out = cli()
+            .env("MA_CONFIG", "/missing/ma-config.json")
+            .args(["prompt", flag])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{flag}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stderr.is_empty());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).starts_with(if flag == "--version" {
+                "ma 0."
+            } else {
+                "ma [OPTIONS]"
+            })
+        );
+        let value = cli()
+            .args(["--model", flag, "--base-url", "invalid", "prompt"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(value.status.code(), Some(2));
+        assert!(value.stdout.is_empty());
+    }
+    let ws = Workspace::new();
+    let (out, req) = run(
+        vec![("200 OK", final_response("done"))],
+        &["--", "--help", "--version"],
+        "",
+        &ws,
+    );
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"done\n");
+    assert_eq!(req[0]["messages"][1]["content"], "--help --version");
+}

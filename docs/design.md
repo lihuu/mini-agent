@@ -13,12 +13,14 @@
 - 配置文件只提供连接设置（`base_url`、`api_key`、`model`），默认 `~/.config/ma/config.json`，可用 `MA_CONFIG` 覆盖；权限永远不能来自配置文件。
 - 权限在启动时确定，运行中绝不询问或升级权限。同一 Policy 产生模型指令并驱动 Guard。
 - Guard 拦截明显违规，包含常见写命令和重定向的路径检查；使用 canonical path 检查已存在的路径与符号链接。未知 executable、程序内部副作用及 shell 动态计算不能被可靠静态判断，因此不是 OS Sandbox。
+- 只读文件命令可使用工作目录通配符，执行前按路径组件匹配并检查目录与符号链接边界，扫描预算每个参数 16384 个目录项。保留引号含义；混合引号的字符范围保守拒绝。写目标仍只接受文字路径。
 
 ## 运行契约
 
 - `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；只读取这三个环境变量，无命名前缀或旧名称后备。配置文件以更低的优先级提供同样的三个键。
 - Base URL 是 API 根目录，例如 `https://example.com/v1`，客户端追加 `/chat/completions`。
 - Prompt 来自位置参数；非终端 stdin 作为补充文本，也支持仅 stdin。限制输入为 1 MiB；shell stdin 固定关闭，避免交互等待。
+- help / version 可出现在 Prompt 后，在配置和输入读取前处理；跳过其他选项的值，并以 `--` 为 Prompt 分界。
 - stdout 只输出完整 final；stderr 输出本地错误。`--verbose` / `-v` 实时追加模型文本、轮次、shell 命令、工具输出及结果。默认关闭过程日志，不引入日志框架。成功退出 0，参数/输入错误 2，HTTP/协议错误 1，耗尽步数 3。
 - `max_steps` 默认 200，指模型请求次数。最后一步不再执行无法反馈给模型的工具调用。
 - 请求 `stream: true`；SSE 按事件而非传输 chunk 解析，支持 UTF-8、开头 BOM、LF/CRLF/CR、心跳及 usage-only chunk。content、reasoning_content、refusal 和按 index 区分的工具参数分别累积；额外字段保留并递归合并对象，冲突值按协议错误退出。`finish_reason` 和 `[DONE]` 必须均出现才认可完整响应。完整接收、校验后执行工具；断流不输出 partial final，也不执行部分工具。整个响应仍限 4 MiB，HTTP timeout 覆盖流式读取。verbose 输出为 best-effort，管道写满时不等待，以免影响请求读取和 shell 超时。
