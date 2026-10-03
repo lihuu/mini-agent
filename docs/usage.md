@@ -1,6 +1,41 @@
 # 使用细节
 
-日常用法见 [README](../README.md)。这里记录参数、输出契约和执行边界。
+安装与日常用法见 [README](../README.md)。以下示例假定 `ma` 已安装并在 `PATH` 中。
+
+## 只构建，不安装
+
+如果只想在源码目录构建：
+
+```sh
+cargo build --release --locked
+./target/release/ma --help
+```
+
+产物是 `target/release/ma`。`./target/release/ma` 是相对源码目录的路径；切换到其他项目后，需要用二进制的绝对路径，或先将它安装到 `PATH`：
+
+```sh
+cd /path/to/your/project
+/path/to/mini-agent/target/release/ma -v '分析当前项目'
+```
+
+将示例中的两个路径替换为实际目录。工作目录取启动位置，与二进制放在哪里无关。
+
+## 参数
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `--base-url URL` | 模型 API 根地址 | `https://api.openai.com/v1` |
+| `--model MODEL` | 模型名称 | 环境变量或配置文件；必需 |
+| `--api-key KEY` | API 密钥，建议用环境变量传入 | 环境变量或配置文件；必需 |
+| `--write` | 允许写入启动时的当前目录及其子目录 | 关闭 |
+| `--net` | 允许 shell 联网 | 关闭 |
+| `-v, --verbose` | 实时显示执行过程 | 关闭 |
+| `--max-steps N` | 最多请求模型的次数 | `200` |
+| `--http-timeout SEC` | 单次模型请求超时，秒 | `120` |
+| `--shell-timeout SEC` | 单次 shell 命令超时，秒 | `30` |
+| `-h, --help` | 显示帮助 | — |
+| `--version` | 显示版本 | — |
+| `--` | 将其后的参数全部视为 Prompt | — |
 
 ## 配置与输入
 
@@ -8,14 +43,34 @@
 
 优先级：命令行参数 > 环境变量 > 配置文件。配置文件默认位于 `~/.config/ma/config.json`（遵循 `XDG_CONFIG_HOME`），可用 `MA_CONFIG` 指向其他路径；显式路径不存在会直接报错。文件必须是 JSON 对象，只接受 `base_url`、`api_key`、`model` 三个字符串键；未知键、非字符串值或非对象都会报错，不静默忽略。**权限不能写入配置文件**：`write` / `net` 会被拒绝，权限只能由命令行授予。含 `api_key` 的配置文件必须不能被同组或其他用户读取，否则拒绝启动并提示 `chmod 600`。
 
+例如，创建默认路径的配置文件（使用 `XDG_CONFIG_HOME` 时相应替换路径）：
+
+```sh
+mkdir -p ~/.config/ma
+```
+
+将以下内容保存为 `~/.config/ma/config.json`，替换为实际连接设置：
+
+```json
+{
+  "base_url": "https://your-endpoint.example/v1",
+  "api_key": "your-key",
+  "model": "your-model"
+}
+```
+
+```sh
+chmod 600 ~/.config/ma/config.json
+```
+
 Prompt 可为一个或多个位置参数；管道 stdin 提供补充上下文，也可以只从 stdin 提供任务。输入必须是 UTF-8，合并后最多 1 MiB。Prompt 以 `-` 开头时使用 `--` 分隔。
 
 `--help` / `-h` / `--version` 可放在 Prompt 后，例如 `ma '任务' --help`，且无需有效模型配置。其他选项的值不会被识别为帮助标志；`--` 后的内容全部作为 Prompt。
 
 ```sh
-printf '%s' '列出当前目录中的 Rust 文件' | ./target/release/ma
-./target/release/ma --max-steps 10 --shell-timeout 15 --http-timeout 90 '分析构建失败原因'
-./target/release/ma --help
+printf '%s' '列出当前目录中的 Rust 文件' | ma
+ma --max-steps 10 --shell-timeout 15 --http-timeout 90 '分析构建失败原因'
+ma --help
 ```
 
 ## 流式响应与执行过程
@@ -25,8 +80,8 @@ printf '%s' '列出当前目录中的 Rust 文件' | ./target/release/ma
 默认只在 stdout 输出完整最终回答。使用 `--verbose` / `-v` 开启实时过程：模型请求轮次和耗时、模型文本片段、shell 命令、工具 stdout/stderr、退出码、拒绝、超时和截断标记均写到 stderr。工具输出在执行中排空时展示，不等命令结束；两路工具输出在过程日志中混合展示，返回模型时仍分别保留。授权头和 API key 配置不会写入过程日志；日志中的模型与工具文本仍是任务原始数据。
 
 ```sh
-./target/release/ma -v '分析当前项目'
-./target/release/ma -v --write '修复配置文件' > answer.txt
+ma -v '分析当前项目'
+ma -v --write '修复配置文件' > answer.txt
 # 最终回答保存在 answer.txt，终端仍实时显示 stderr 中的执行过程
 ```
 

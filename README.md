@@ -2,92 +2,60 @@
 
 **One model. One tool. One loop.**
 
-A tiny, one-shot agent in a single binary. Give it a task; it calls a model, runs shell commands, prints the answer, and exits.
+`ma` 是一个一次性运行的命令行 Agent：接收任务，调用模型，使用宿主已有的 shell 工具完成工作，输出回答后退出。支持 macOS / Linux，运行时只需要一个二进制文件。
 
-`ma` 是一个用 Rust 写的小型命令行 Agent：一个模型、一个 `shell` 工具、一个执行循环。它使用宿主已有的 CLI 完成任务，给出最终回答后退出。没有会话管理、插件或后台服务。
+## 安装
 
-- 单二进制，release 约 1.3–1.5 MB，支持 macOS / Linux。
-- 使用支持工具调用的 OpenAI-compatible Chat Completions，默认流式接收。
-- 支持管道输入，使用 `-v` 实时查看执行过程。
-
-## 快速开始
-
-从源码构建需要 Rust 1.85+ 和 C 编译器；Agent 本身运行无需安装 Rust、Python、Node 或 JVM，工具命令使用系统 `/bin/sh`。
+从源码安装需要 Rust 1.85+ 和 C 编译器：
 
 ```sh
 git clone https://github.com/lihuu/mini-agent.git
 cd mini-agent
-cargo build --release --locked
+cargo install --path . --locked
 
+export PATH="$HOME/.cargo/bin:$PATH"
+ma --help
+```
+
+`cargo install` 会构建 release 版本，并默认把 `ma` 安装到 `~/.cargo/bin`。确保该目录在 `PATH` 中，之后就可以在任意项目目录调用 `ma`。运行 `ma` 无需安装 Rust；它使用任务所需的宿主 CLI。
+
+## 配置模型
+
+使用支持工具调用的 OpenAI-compatible Chat Completions API，将下面的地址、模型和密钥替换为你的实际配置：
+
+```sh
 export BASE_URL='https://your-endpoint.example/v1'
 export MODEL='your-model'
 export API_KEY='your-key'
-
-./target/release/ma -v '分析当前项目'
 ```
 
-`BASE_URL` 填 API 根地址，程序会追加 `/chat/completions`；默认是 `https://api.openai.com/v1`。模型和密钥必须提供；这三个值也可以写进配置文件（见下）。
+`BASE_URL` 是 API 根地址，程序会追加 `/chat/completions`。也可以将连接设置保存到配置文件，见[使用说明](docs/usage.md#配置与输入)。
 
-## 用法
+## 使用
+
+先进入要处理的项目目录。`ma` 以**启动时的当前目录**为工作目录：
 
 ```sh
-# 分析当前目录
-./target/release/ma '解释这个项目的结构'
+cd /path/to/your/project
+ma -v '解释这个项目的结构'
+```
 
+`-v` 实时显示模型文本和命令执行过程；最终回答写入 stdout，过程写入 stderr。
+
+```sh
 # 从 stdin 接收补充上下文
-git diff | ./target/release/ma '总结这些修改'
+git diff | ma '总结这些修改'
 
-# 允许修改当前目录及其子目录，并实时显示执行过程
-./target/release/ma -v --write '修复配置文件'
+# 允许修改当前目录及其子目录
+ma -v --write '修复配置文件'
 
 # 同时允许 shell 联网
-./target/release/ma -v --write --net '升级项目依赖'
-
-# 保存最终回答，执行过程仍显示在终端
-./target/release/ma -v '分析构建失败原因' > answer.txt
+ma -v --write --net '升级项目依赖'
 ```
 
-默认只在 stdout 输出完整最终回答；`-v` / `--verbose` 开启后，模型文本、shell 命令和输出、耗时与结果实时写入 stderr。
+默认拒绝常见写操作和 shell 网络命令，模型 API 请求始终允许。内置 Guard 是尽力而为的命令检查，**不是安全沙箱**；需要强隔离时使用容器或虚拟机。详见[安全说明](SECURITY.md)。
 
-仅在上游明确报告上下文过长时，删除最旧的一批完整执行轮次并重试模型一次。保留原始任务与最近轮次，不自动生成摘要，也不重复执行已处理的 shell 命令。`-v` 会显示裁剪过程。
-
-## 常用参数
-
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `--base-url` | 模型 API 根地址 | `https://api.openai.com/v1` |
-| `--model` | 模型名称 | `MODEL` |
-| `--api-key` | API 密钥，建议用环境变量传入 | `API_KEY` |
-| `--write` | 允许写入启动时的当前目录及其子目录 | 关闭 |
-| `--net` | 允许 shell 联网 | 关闭 |
-| `-v, --verbose` | 实时显示执行过程 | 关闭 |
-| `--max-steps` | 最多请求模型的次数 | `200` |
-| `--http-timeout` | 单次模型请求超时，秒 | `120` |
-| `--shell-timeout` | 单次 shell 命令超时，秒 | `30` |
-
-完整帮助：`./target/release/ma --help`。优先级：命令行 > 环境变量 > 配置文件。
-
-## 配置文件
-
-默认读取 `~/.config/ma/config.json`（遵循 `XDG_CONFIG_HOME`），也可用 `MA_CONFIG` 指定其他路径：
-
-```json
-{
-  "base_url": "http://localhost:11434/v1",
-  "api_key": "ollama",
-  "model": "gemma4:cloud"
-}
-```
-
-只支持 `base_url`、`api_key`、`model` 三个键，未知键直接报错。**权限不能由配置文件授予**（`write` / `net` 会被拒绝），只能来自命令行。含 `api_key` 的文件必须不能被同组或其他用户读取（`chmod 600`），否则拒绝启动。
-
-## 权限边界
-
-默认检查并拒绝常见写操作和 shell 网络命令；模型 API 请求始终允许。权限在启动时确定，运行中不弹出审批。
-
-**内置 Guard 是 best-effort 检查，不是安全沙箱。** 未知 CLI、构建脚本等仍可能产生检查未识别的副作用。需要强隔离时，应使用容器或虚拟机。详见 [SECURITY.md](SECURITY.md)。
-
-参数细节、命令限制、输出契约和测试方法见 [使用说明](docs/usage.md)；设计与验收记录见 [设计说明](docs/design.md)。
+完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。
 
 ## License
 
