@@ -136,3 +136,27 @@ chmod +x "dist/$name/ma"
 ```
 
 归档内的路径形态（`ma` 还是 `<目录>/ma`）两种都被 `ma --update` 的提取逻辑接受。
+
+## 脚本化：`scripts/release.sh`
+
+上面的手工步骤已固化为脚本：
+
+```sh
+./scripts/release.sh patch          # 0.3.6 → 0.3.7
+./scripts/release.sh minor
+./scripts/release.sh major
+./scripts/release.sh 1.0.0          # 或直接指定版本
+./scripts/release.sh --dry-run patch   # 只打印计划，不写任何东西
+./scripts/release.sh --no-push patch   # 提交并打 tag，但不推送
+```
+
+脚本按顺序做这些事，任何一步失败就停下：
+
+1. 拒绝在非 `main` 分支或脏工作区上开始
+2. 拒绝重复使用已存在的 tag
+3. 依次跑 `cargo fmt --check`、`clippy --locked -D warnings`、`test --locked --release`
+4. 改 `Cargo.toml` 并 `cargo update --workspace` 同步 `Cargo.lock`
+5. `Release vX.Y.Z` 提交 → 附注 tag
+6. 推送 `main` 与 tag，由工作流接手构建
+
+**它只做到推送为止，产物由 CI 产出。** 所以本地脚本失败不会留下半个版本。

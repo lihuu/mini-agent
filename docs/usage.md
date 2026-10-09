@@ -198,3 +198,12 @@ wc -c target/release/ma
 ```
 
 测试使用临时工作目录、真实 `/bin/sh` 和本地 mock HTTP 服务，无需密钥或真实模型。CI 对 macOS / Linux 执行相同检查，并要求 release binary 小于 10,000,000 字节；目标小于 5,000,000 字节。`rg`、`fd`、`jq` 等是可选宿主工具，不是 `ma` 运行依赖。
+
+仓库内的两个脚本：
+
+```sh
+./scripts/install.sh    # 安装到 ~/.local/bin
+./scripts/release.sh    # 发版：bump → 验证 → 提交 → tag → 推送
+```
+
+`release.sh` 的用法与它对工作区的要求见[发版流程](releasing.md#脚本化scriptsrelease.sh)。
