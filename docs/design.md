@@ -6,10 +6,10 @@
 
 - 唯一模型协议为 OpenAI-compatible Chat Completions；默认同步 SSE 流式接收，不使用 SDK，兼容直接返回 JSON 的响应。
 - 唯一工具 `shell(command)`。循环只负责请求模型、执行工具、追加工具结果、输出 final。
-- macOS、Linux 为 V0 目标。Windows 暂不实现。无 Session、Memory、MCP、Skills、Planner、Provider 抽象、GUI、常驻后台工作。
-- 同步 HTTP；少量普通函数，产品代码集中在 `src/main.rs`。
+- macOS、Linux 为 V0 目标。Windows 暂不实现。无 Session、Memory、MCP、Planner、Provider 抽象、GUI、常驻后台工作。Skills 仅支持命令行显式选择后的指令加载。
+- 同步 HTTP；少量普通函数，循环和权限逻辑在 `src/main.rs`，skill 加载与提示词拼装在 `src/skills.rs`。
 - 默认 workspace read、write deny、shell network deny。模型 HTTP 请求不受 shell 网络开关影响。
-- 用户已明确：`--write` 只授予启动时当前工作目录及其子目录的写权限。不增加自定义授权目录。
+- 用户已明确：`--write` 只授予启动时当前工作目录及其子目录的写权限。`--skills` 为选中的实际 skill 目录增加只读访问，不增加自定义写授权目录。
 - 配置文件只提供连接设置（`base_url`、`api_key`、`model`），默认 `~/.config/ma/config.json`，可用 `MA_CONFIG` 覆盖；权限永远不能来自配置文件。
 - 权限在启动时确定，运行中绝不询问或升级权限。同一 Policy 产生模型指令并驱动 Guard。
 - Guard 拦截明显违规，包含常见写命令和重定向的路径检查；使用 canonical path 检查已存在的路径与符号链接。未知 executable、程序内部副作用及 shell 动态计算不能被可靠静态判断，因此不是 OS Sandbox。
@@ -17,7 +17,8 @@
 
 ## 运行契约
 
-- `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；只读取这三个环境变量，无命名前缀或旧名称后备。配置文件以更低的优先级提供同样的三个键。
+- `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；模型设置只读取这三个环境变量，无命名前缀或旧名称后备。配置文件以更低的优先级提供同样的三个键。
+- `--skills name1,name2` 只按目录名查找启动 cwd 的 `.agents/skills/` 和 `$HOME/.agents/skills/`；项目优先，读取失败回退，仍失败则跳过。不传就不加载。完整 `SKILL.md` 和实际目录进入系统提示词的 skills 段，保持两条初始消息（system、user）及现有裁剪契约。资源按需由 shell 读取，不预先运行脚本、不解析权限 frontmatter、不注册新工具。单文件 64 KiB、原始指令总量 1 MiB；加载和跳过仅在 verbose 记录。自定义目录输入尚未支持。
 - Base URL 是 API 根目录，例如 `https://example.com/v1`，客户端追加 `/chat/completions`。
 - Prompt 来自位置参数；非终端 stdin 作为补充文本，也支持仅 stdin。限制输入为 1 MiB；shell stdin 固定关闭，避免交互等待。
 - help / version 可出现在 Prompt 后，在配置和输入读取前处理；跳过其他选项的值，并以 `--` 为 Prompt 分界。

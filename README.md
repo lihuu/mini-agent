@@ -51,11 +51,16 @@ ma -v --write '修复配置文件'
 
 # 同时允许 shell 联网
 ma -v --write --net '升级项目依赖'
+
+# 按名称加载指定 skills；多个名称用英文逗号分隔
+ma --skills code-review,explain '评审并解释这些修改'
 ```
 
 默认拒绝常见写操作和 shell 网络命令，模型 API 请求始终允许。内置 Guard 是尽力而为的命令检查，**不是安全沙箱**；需要强隔离时使用容器或虚拟机。详见[安全说明](SECURITY.md)。
 
 完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。
+
+`--skills` 按目录名从当前项目的 `.agents/skills/`、然后 `~/.agents/skills/` 查找 `SKILL.md`；项目优先，找不到或无法读取的跳过。不传此参数就不加载任何 skill。指定 skills 的完整指令会加入提示词，引用文件按需读取；自定义目录参数尚未支持。详见[skills 使用说明](docs/usage.md#skills)。
 
 ## License
 

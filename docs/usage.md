@@ -27,6 +27,7 @@ cd /path/to/your/project
 | `--base-url URL` | 模型 API 根地址 | `https://api.openai.com/v1` |
 | `--model MODEL` | 模型名称 | 环境变量或配置文件；必需 |
 | `--api-key KEY` | API 密钥，建议用环境变量传入 | 环境变量或配置文件；必需 |
+| `--skills NAMES` | 按目录名加载 skills，多个名称用英文逗号分隔 | 不加载 |
 | `--write` | 允许写入启动时的当前目录及其子目录 | 关闭 |
 | `--net` | 允许 shell 联网 | 关闭 |
 | `-v, --verbose` | 实时显示执行过程 | 关闭 |
@@ -39,7 +40,7 @@ cd /path/to/your/project
 
 ## 配置与输入
 
-使用 `BASE_URL`、`MODEL`、`API_KEY` 配置模型，也支持 `--base-url`、`--model`、`--api-key` 参数（密钥建议通过环境变量传递）。只读取这三个环境变量。默认 API 根目录为 `https://api.openai.com/v1`，客户端追加 `/chat/completions`，不要传入完整接口路径。
+使用 `BASE_URL`、`MODEL`、`API_KEY` 配置模型，也支持 `--base-url`、`--model`、`--api-key` 参数（密钥建议通过环境变量传递）。模型连接设置只读取这三个环境变量。默认 API 根目录为 `https://api.openai.com/v1`，客户端追加 `/chat/completions`，不要传入完整接口路径。
 
 优先级：命令行参数 > 环境变量 > 配置文件。配置文件默认位于 `~/.config/ma/config.json`（遵循 `XDG_CONFIG_HOME`），可用 `MA_CONFIG` 指向其他路径；显式路径不存在会直接报错。文件必须是 JSON 对象，只接受 `base_url`、`api_key`、`model` 三个字符串键；未知键、非字符串值或非对象都会报错，不静默忽略。**权限不能写入配置文件**：`write` / `net` 会被拒绝，权限只能由命令行授予。含 `api_key` 的配置文件必须不能被同组或其他用户读取，否则拒绝启动并提示 `chmod 600`。
 
@@ -87,6 +88,28 @@ ma -v --write '修复配置文件' > answer.txt
 
 verbose 会在 stderr 显示模型文本片段，最后在 stdout 输出一次完整最终回答；程序调用方应分别消费这两路输出。stderr 管道写满时丢弃可选过程日志，避免阻塞模型读取和工具超时；返回模型的工具结果仍按原有预算保留。不输出模型的 reasoning_content 文本，但保留该兼容字段和不冲突的扩展元数据供后续模型请求使用。SSE 支持 LF、CRLF、CR 换行及流开头的 UTF-8 BOM。没有进度 UI、交互式审批或额外日志框架。
 
+## Skills
+
+```sh
+ma --skills code-review,explain '评审并解释这些修改'
+ma --skills=code-review '评审这些修改'
+```
+
+每个名称按顺序查找以下位置的 `SKILL.md`，使用第一个成功读取的文件：
+
+1. `<启动 cwd>/.agents/skills/<名称>/SKILL.md`
+2. `$HOME/.agents/skills/<名称>/SKILL.md`
+
+名称是 skill **目录名**，不按 frontmatter 的 `name` 搜索；允许英文字母、数字、连字符和下划线，不能以连字符开头，也不能传路径。英文逗号分隔的名称会去除首尾空白、忽略空项；可重复传 `--skills`，重复名称或指向同一个实际目录的 skill 只加载一次，保留选择顺序。不传参数就不加载 skills，不扫描其他 Agent 的私有目录，也不向上查找父项目目录。未设置 `HOME` 时只查项目目录。
+
+找不到、无法读取、非 UTF-8 或空的 `SKILL.md` 会跳过；单文件最多 64 KiB，所有 skills 的原始文本合计最多 1 MiB，超预算的文件也跳过。默认静默，`-v` 显示加载和跳过原因；stdout 仍只输出最终回答。
+
+指定 skill 的完整 `SKILL.md`（包含 frontmatter）会作为独立的 skills 段加入系统提示词，不预先加载引用资料或运行脚本。这是显式选择后的直接加载，不是先列出全部 skills 再由模型选择。提示词同时提供名称和实际目录；相对引用以该目录为基准，模型通过 shell 使用绝对路径按需读取。能力约束和用户明确任务优先于 skill 指令。上下文恢复保留整个系统提示词，因此已加载的 skills 不会被历史裁剪移除。
+
+通过符号链接安装的 skill 目录会解析为实际目录；选中的实际目录额外授予只读访问，未选中的工作目录外的 skill 不获得此权限。读取文件的符号链接仍检查实际目标，拒绝逃出工作目录和选中 skill 目录的读取；`SKILL.md` 自身指向 skill 目录外时跳过。写权限仍只限启动 cwd 及其子目录，网络权限仍由 `--net` 控制；skill 的 `allowed-tools` 等 frontmatter 不改变权限，也不会注册新工具。外部引用可使用 `cat`、`head` 等现有只读命令；脚本执行继续受当前 Guard 约束，不保证其他 Agent 专用技能或复杂脚本兼容。
+
+当前只支持名称输入，自定义单个 skill 目录或包含多个 skills 的目录留待后续扩展。
+
 ## 上下文过长恢复
 
 正常运行只追加消息，不主动裁剪。只有上游明确报告上下文过长才触发恢复：HTTP 400/413/422 的有界 JSON 错误体，或 JSON/SSE 响应中的 `error`。识别 `context_length_exceeded` / `context_window_exceeded` 的 code/type，以及明确描述 context length/window exceeded 的消息；普通 400、鉴权失败、限流、服务器错误和超时不触发。
@@ -108,7 +131,7 @@ verbose 会在 stderr 显示模型文本片段，最后在 stdout 输出一次�
 | `--net` | 允许 | 拒绝 | 允许 |
 | `--write --net` | 允许 | 启动时 cwd 及其子目录 | 允许 |
 
-模型 API 请求始终允许，与 shell 的 `--net` 分开。系统可执行文件和运行所需的系统资源仍可使用。不支持额外授权目录。
+模型 API 请求始终允许，与 shell 的 `--net` 分开。系统可执行文件和运行所需的系统资源仍可使用。`--skills` 选中的 skill 目录额外允许只读访问；除此之外不支持额外授权目录。
 
 同一份 Policy 生成模型指令并执行 Guard 检查。Guard 拦截常见写命令、文件重定向、明显网络命令；检查文字路径中的父目录、已有符号链接和常见输出选项。`/dev/null` 是可用输出目标，文件描述符重定向如 `>&2` 可用。
 

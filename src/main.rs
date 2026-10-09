@@ -4,6 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
+mod skills;
+
 const INPUT_LIMIT: usize = 1024 * 1024;
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const RESPONSE_LIMIT: u64 = 4 * 1024 * 1024;
@@ -41,6 +43,7 @@ One model. One tool. One loop.\n\n\
   --base-url URL       API root; appends /chat/completions\n\
   --api-key KEY        Prefer API_KEY environment variable\n\
   --model MODEL       Model name\n\
+  --skills NAMES      Load selected skills by comma-separated directory names\n\
   --write             Allow obvious writes within startup cwd and descendants\n\
   --net               Allow shell network commands (model HTTP is always allowed)\n\
   -v, --verbose       Print live model text, shell output and progress to stderr\n\
@@ -60,6 +63,7 @@ Permissions cannot be granted by the config file; use --write / --net.\n";
 
 struct Policy {
     workspace: PathBuf,
+    read_roots: Vec<PathBuf>,
     write: bool,
     net: bool,
 }
@@ -76,6 +80,7 @@ struct Config {
     api_key: String,
     model: String,
     prompt: String,
+    skills: Vec<skills::Skill>,
     max_steps: usize,
     http_timeout: Duration,
     shell_timeout: Duration,
@@ -201,6 +206,7 @@ fn parse_config() -> Result<Config, String> {
         api_key: setting("API_KEY", &file, "api_key"),
         model: setting("MODEL", &file, "model"),
         prompt: String::new(),
+        skills: Vec::new(),
         max_steps: 200,
         http_timeout: Duration::from_secs(120),
         shell_timeout: Duration::from_secs(30),
@@ -211,10 +217,12 @@ fn parse_config() -> Result<Config, String> {
                 .map_err(|e| format!("workspace: {e}"))?,
             write: false,
             net: false,
+            read_roots: Vec::new(),
         },
     };
     let mut args = std::env::args().skip(1);
     let mut prompts = Vec::new();
+    let mut skill_names = Vec::new();
     while let Some(arg) = args.next() {
         if arg == "--" {
             prompts.extend(args);
@@ -233,7 +241,7 @@ fn parse_config() -> Result<Config, String> {
                 }
             }
             "--base-url" | "--api-key" | "--model" | "--max-steps" | "--http-timeout"
-            | "--shell-timeout" => {
+            | "--shell-timeout" | "--skills" => {
                 let value = inline
                     .map(str::to_owned)
                     .or_else(|| args.next())
@@ -242,6 +250,7 @@ fn parse_config() -> Result<Config, String> {
                     "--base-url" => c.base_url = value,
                     "--api-key" => c.api_key = value,
                     "--model" => c.model = value,
+                    "--skills" => skill_names.extend(skills::parse_names(&value)?),
                     "--max-steps" => c.max_steps = positive(&value, flag)? as usize,
                     "--http-timeout" => {
                         c.http_timeout = Duration::from_secs(positive(&value, flag)?)
@@ -305,7 +314,27 @@ fn parse_config() -> Result<Config, String> {
     if c.prompt.len() > INPUT_LIMIT {
         return Err("combined prompt exceeds 1 MiB".into());
     }
+    if !skill_names.is_empty() {
+        let mut roots = vec![c.policy.workspace.join(".agents/skills")];
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            roots.push(PathBuf::from(home).join(".agents/skills"));
+        }
+        c.skills = skills::load(&skill_names, &roots, c.verbose);
+        c.policy.read_roots = c
+            .skills
+            .iter()
+            .map(|skill| skill.directory.clone())
+            .collect();
+    }
     Ok(c)
+}
+
+impl Config {
+    fn system_instruction(&self) -> String {
+        let mut prompt = self.policy.instruction();
+        skills::append_prompt(&mut prompt, &self.skills);
+        prompt
+    }
 }
 
 impl Policy {
@@ -339,6 +368,14 @@ impl Policy {
     }
 
     fn resolve_path(&self, cwd: &Path, value: &Path) -> Result<PathBuf, String> {
+        self.resolve_access(cwd, value, false)
+    }
+
+    fn resolve_read_path(&self, cwd: &Path, value: &Path) -> Result<PathBuf, String> {
+        self.resolve_access(cwd, value, true)
+    }
+
+    fn resolve_access(&self, cwd: &Path, value: &Path, read: bool) -> Result<PathBuf, String> {
         let mut path = if value.is_absolute() {
             PathBuf::new()
         } else {
@@ -366,7 +403,8 @@ impl Policy {
                 }
             }
         }
-        if !path.starts_with(&self.workspace) {
+        let readable_skill = read && self.read_roots.iter().any(|root| path.starts_with(root));
+        if !(path.starts_with(&self.workspace) || readable_skill) {
             return Err("permission denied: path is outside workspace".into());
         }
         Ok(path)
@@ -387,7 +425,7 @@ impl Policy {
         }
         // Check the literal fallback even when candidates exist: shell directory
         // requirements can discard them and pass the original pattern unchanged.
-        self.resolve_path(cwd, Path::new(value))?;
+        self.resolve_read_path(cwd, Path::new(value))?;
         let Some(glob) = glob else {
             return Ok(());
         };
@@ -425,14 +463,14 @@ impl Policy {
             .position(|c| wildcard(c.as_os_str().to_str().unwrap()))
             .ok_or("permission denied: invalid glob pattern")?;
         let prefix: PathBuf = raw[..start].iter().collect();
-        let mut paths = vec![self.resolve_path(cwd, &prefix)?];
+        let mut paths = vec![self.resolve_read_path(cwd, &prefix)?];
         let mut inspected = 0;
         for i in start..masks.len() {
             let mask = masks[i].as_os_str().to_str().unwrap();
             let mut next = Vec::new();
             if !wildcard(mask) {
                 for path in paths {
-                    next.push(self.resolve_path(&path, Path::new(raw[i].as_os_str()))?);
+                    next.push(self.resolve_read_path(&path, Path::new(raw[i].as_os_str()))?);
                 }
             } else {
                 let mask = CString::new(mask).map_err(|_| "invalid glob pattern")?;
@@ -452,7 +490,7 @@ impl Policy {
                     // Some /bin/sh implementations include . and .. in dot-prefixed globs.
                     for dot in [".", ".."] {
                         if matches(std::ffi::OsStr::new(dot))? {
-                            next.push(self.resolve_path(&path, Path::new(dot))?);
+                            next.push(self.resolve_read_path(&path, Path::new(dot))?);
                         }
                     }
                     let entries = match std::fs::read_dir(&path) {
@@ -480,7 +518,9 @@ impl Policy {
                             format!("permission denied: cannot inspect glob entry: {e}")
                         })?;
                         if matches(&entry.file_name())? {
-                            next.push(self.resolve_path(&path, Path::new(&entry.file_name()))?);
+                            next.push(
+                                self.resolve_read_path(&path, Path::new(&entry.file_name()))?,
+                            );
                         }
                     }
                 }
@@ -1578,7 +1618,7 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
         .build()
         .new_agent();
     let mut messages = vec![
-        json!({"role":"system", "content":c.policy.instruction()}),
+        json!({"role":"system", "content":c.system_instruction()}),
         json!({"role":"user", "content":c.prompt}),
     ];
     let mut requests = 0;
@@ -1777,6 +1817,7 @@ fn informational_arg() -> Option<String> {
                 | "--max-steps"
                 | "--http-timeout"
                 | "--shell-timeout"
+                | "--skills"
         ) {
             args.next(); // The next argument is a value, even when it resembles --help.
         }

@@ -2086,3 +2086,284 @@ fn help_and_version_work_after_prompt_but_not_as_values_or_after_separator() {
     assert_eq!(out.stdout, b"done\n");
     assert_eq!(req[0]["messages"][1]["content"], "--help --version");
 }
+
+fn write_skill(root: &Workspace, name: &str, body: &str) -> PathBuf {
+    let directory = root.0.join(".agents/skills").join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Test skill\n---\n{body}\n"),
+    )
+    .unwrap();
+    directory.canonicalize().unwrap()
+}
+
+#[test]
+fn skills_load_only_selected_names_with_project_precedence() {
+    let ws = Workspace::new();
+    let home = Workspace::new();
+    let local = write_skill(&ws, "review", "PROJECT REVIEW INSTRUCTIONS");
+    write_skill(&home, "review", "SHADOWED USER INSTRUCTIONS");
+    let user = write_skill(&home, "explain", "USER EXPLAIN INSTRUCTIONS");
+    write_skill(&home, "unused", "UNSELECTED INSTRUCTIONS");
+    let (out, req) = run_with_env(
+        vec![("200 OK", final_response("done"))],
+        &["--skills", "review, missing,explain,review,", "task"],
+        "piped context",
+        &ws,
+        Some(("HOME", home.0.as_os_str())),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stderr.is_empty());
+    let system = req[0]["messages"][0]["content"].as_str().unwrap();
+    assert_eq!(system.matches("PROJECT REVIEW INSTRUCTIONS").count(), 1);
+    assert!(system.contains("USER EXPLAIN INSTRUCTIONS"));
+    assert!(!system.contains("SHADOWED USER INSTRUCTIONS"));
+    assert!(!system.contains("UNSELECTED INSTRUCTIONS"));
+    assert!(system.contains(local.to_str().unwrap()));
+    assert!(system.contains(user.to_str().unwrap()));
+    assert_eq!(
+        req[0]["messages"][1]["content"],
+        "task\n\nStdin context:\npiped context"
+    );
+    assert_eq!(req[0]["tools"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn skills_are_opt_in_and_all_missing_names_are_a_noop() {
+    let ws = Workspace::new();
+    let home = Workspace::new();
+    write_skill(&ws, "review", "DO NOT AUTOLOAD");
+    write_skill(&home, "explain", "DO NOT AUTOLOAD USER");
+    let mut systems = Vec::new();
+    for flags in [vec!["task"], vec!["--skills=missing,absent", "task"]] {
+        let (out, req) = run_with_env(
+            vec![("200 OK", final_response("done"))],
+            &flags,
+            "",
+            &ws,
+            Some(("HOME", home.0.as_os_str())),
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stderr.is_empty());
+        systems.push(req[0]["messages"][0].clone());
+    }
+    assert_eq!(systems[0], systems[1]);
+    assert!(
+        !systems[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("DO NOT AUTOLOAD")
+    );
+}
+
+#[test]
+fn skills_read_selected_resources_but_keep_external_writes_and_other_reads_denied() {
+    let ws = Workspace::new();
+    let home = Workspace::new();
+    let skill = write_skill(
+        &home,
+        "review",
+        "Read references/guide.txt relative to this skill.",
+    );
+    std::fs::create_dir(skill.join("references")).unwrap();
+    let guide = skill.join("references/guide.txt");
+    std::fs::write(&guide, "selected reference").unwrap();
+    let other = write_skill(&home, "other", "other skill");
+    let commands = [
+        format!("cat '{}'", guide.display()),
+        format!("cat '{}'/*.txt", skill.join("references").display()),
+        format!("cat '{}/SKILL.md'", other.display()),
+        format!("printf changed > '{}'", guide.display()),
+        format!("touch '{}/new-file'", skill.display()),
+    ];
+    let calls: Vec<_> = commands
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| (format!("call-{i}"), cmd.as_str()))
+        .collect();
+    let calls: Vec<_> = calls.iter().map(|(id, cmd)| (id.as_str(), *cmd)).collect();
+    let (out, req) = run_with_env(
+        vec![
+            ("200 OK", tools(&calls)),
+            ("200 OK", final_response("done")),
+        ],
+        &["--skills=review", "--write", "task"],
+        "",
+        &ws,
+        Some(("HOME", home.0.as_os_str())),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for i in [3, 4] {
+        assert_eq!(result(&req[1], i)["stdout"], "selected reference");
+        assert_eq!(result(&req[1], i)["exit_code"], 0);
+    }
+    for i in [5, 6, 7] {
+        assert!(
+            result(&req[1], i)["error"]
+                .as_str()
+                .unwrap()
+                .contains("outside workspace")
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(guide).unwrap(),
+        "selected reference"
+    );
+    assert!(!skill.join("new-file").exists());
+}
+
+#[test]
+fn skills_survive_context_recovery() {
+    let ws = Workspace::new();
+    write_skill(&ws, "review", "KEEP SKILL INSTRUCTIONS");
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&[("old", "printf old")])),
+            ("200 OK", tools(&[("recent", "printf recent")])),
+            ("400 Bad Request", context_error()),
+            ("200 OK", final_response("done")),
+        ],
+        &["--skills=review", "task"],
+        "",
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        req[3]["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("KEEP SKILL INSTRUCTIONS")
+    );
+    assert_eq!(req[0]["messages"][0], req[3]["messages"][0]);
+}
+
+#[test]
+fn skills_names_cannot_escape_the_convention_directory_or_consume_help() {
+    for name in [
+        "../review",
+        "/tmp/review",
+        "review/subdir",
+        "..",
+        "review\\subdir",
+        "--help",
+    ] {
+        let out = cli()
+            .args(["--skills", name, "task"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("skill name"));
+    }
+}
+
+#[test]
+fn skills_skip_unreadable_or_oversized_files_and_report_only_in_verbose_mode() {
+    let ws = Workspace::new();
+    let home = Workspace::new();
+    let bad = write_skill(&ws, "bad", "placeholder");
+    std::fs::write(bad.join("SKILL.md"), [0xff]).unwrap();
+    let huge = write_skill(&ws, "huge", "placeholder");
+    std::fs::write(huge.join("SKILL.md"), vec![b'x'; 64 * 1024 + 1]).unwrap();
+    for verbose in [false, true] {
+        let mut flags = vec!["--skills", "bad,huge,missing", "task"];
+        if verbose {
+            flags.push("-v");
+        }
+        let (out, req) = run_with_env(
+            vec![("200 OK", final_response("done"))],
+            &flags,
+            "",
+            &ws,
+            Some(("HOME", home.0.as_os_str())),
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"done\n");
+        assert!(
+            !req[0]["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("placeholder")
+        );
+        if verbose {
+            let log = String::from_utf8_lossy(&out.stderr);
+            for name in ["bad", "huge", "missing"] {
+                assert!(log.contains(name), "{log}");
+            }
+        } else {
+            assert!(out.stderr.is_empty());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn skills_resolve_linked_directories_without_allowing_resource_symlink_escape() {
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let home = Workspace::new();
+    let store = Workspace::new();
+    let skill = write_skill(&store, "review", "LINKED SKILL INSTRUCTIONS");
+    let roots = home.0.join(".agents/skills");
+    std::fs::create_dir_all(&roots).unwrap();
+    symlink(&skill, roots.join("linked")).unwrap();
+    symlink(&skill, roots.join("alias")).unwrap();
+    let secret = home.0.join("secret.txt");
+    std::fs::write(&secret, "outside secret").unwrap();
+    symlink(&secret, skill.join("escape.txt")).unwrap();
+    let escaped = write_skill(&home, "escaped", "placeholder");
+    std::fs::remove_file(escaped.join("SKILL.md")).unwrap();
+    symlink(&secret, escaped.join("SKILL.md")).unwrap();
+    let command = format!("cat '{}/escape.txt'", skill.display());
+    let (out, req) = run_with_env(
+        vec![
+            ("200 OK", tools(&[("escape", &command)])),
+            ("200 OK", final_response("done")),
+        ],
+        &["--skills", "linked,alias,escaped", "task"],
+        "",
+        &ws,
+        Some(("HOME", home.0.as_os_str())),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let system = req[0]["messages"][0]["content"].as_str().unwrap();
+    assert_eq!(system.matches("LINKED SKILL INSTRUCTIONS").count(), 1);
+    assert!(system.contains(skill.to_str().unwrap()));
+    assert!(!system.contains("outside secret"));
+    assert!(
+        result(&req[1], 3)["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside workspace")
+    );
+}
