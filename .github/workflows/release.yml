@@ -1,8 +1,8 @@
 name: Release
 
 # Publishing is a deliberate act: pushing a vX.Y.Z tag builds the binaries and
-# attaches them to a draft release. The draft is never auto-published, so a
-# broken build or a wrong version never reaches users without review.
+# publishes them. The verify job gates the build, so a failing test suite or a
+# tag that disagrees with Cargo.toml aborts before anything is attached.
 on:
   push:
     tags: ["v*"]
@@ -78,6 +78,5 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
           generate_release_notes: true
           files: dist/*.tar.gz
