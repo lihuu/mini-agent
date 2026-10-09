@@ -6,6 +6,19 @@
 
 ## 安装
 
+预编译二进制在 [Releases](https://github.com/lihuu/mini-agent/releases) 页面，下载对应平台后解压即可，无需 Rust：
+
+| 平台 | 产物 |
+| --- | --- |
+| macOS (Apple Silicon) | `ma-<版本>-aarch64-apple-darwin.tar.gz` |
+| Linux (x86_64) | `ma-<版本>-x86_64-unknown-linux-gnu.tar.gz` |
+
+```sh
+tar -xzf ma-<版本>-aarch64-apple-darwin.tar.gz
+mv ma-<版本>-aarch64-apple-darwin/ma ~/.local/bin/
+ma --help
+```
+
 从源码安装需要 Rust 1.85+ 和 C 编译器：
 
 ```sh
