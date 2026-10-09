@@ -11,13 +11,15 @@
 ```sh
 git clone https://github.com/lihuu/mini-agent.git
 cd mini-agent
-cargo install --path . --locked
-
-export PATH="$HOME/.cargo/bin:$PATH"
+./scripts/install.sh
 ma --help
 ```
 
-`cargo install` 会构建 release 版本，并默认把 `ma` 安装到 `~/.cargo/bin`。确保该目录在 `PATH` 中，之后就可以在任意项目目录调用 `ma`。运行 `ma` 无需安装 Rust；它使用任务所需的宿主 CLI。
+脚本构建 release 版本并安装到 `~/.local/bin`。选这个目录是因为它在 XDG 用户 bin 约定内，且在 `PATH` 上通常排在 `~/.cargo/bin` 之前，后来的同名命令不会静默遮蔽它。若旧副本由 cargo 管理，脚本会一并移除；不是 cargo 管理的文件绝不触碰。
+
+`--prefix DIR` 改安装根（二进制落在 `DIR/bin`），`--uninstall` 卸载，`--offline` 禁止 cargo 联网。等价的手工命令是 `cargo install --path . --locked --root ~/.local`。
+
+运行 `ma` 无需安装 Rust；它使用任务所需的宿主 CLI。
 
 ## 配置模型
 

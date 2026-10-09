@@ -20,6 +20,16 @@ cd /path/to/your/project
 
 将示例中的两个路径替换为实际目录。工作目录取启动位置，与二进制放在哪里无关。
 
+安装到用户级 `PATH` 用仓库内的脚本：
+
+```sh
+./scripts/install.sh              # 安装到 ~/.local/bin
+./scripts/install.sh --prefix ~/.cargo   # 或任意根目录，二进制落在 <DIR>/bin
+./scripts/install.sh --uninstall  # 卸载
+```
+
+脚本默认安装到 `~/.local/bin`，该目录通常在 `PATH` 上排在 `~/.cargo/bin` 之前，因此后来的同名命令不会被旧副本静默遮蔽。安装后若发现旧副本仍由 cargo 管理，脚本会把它移除；不是 cargo 管理的文件不会被删除。`--offline` 传给 cargo 以禁止联网（依赖必须已在本地缓存中）。
+
 ## 参数
 
 | 参数 | 说明 | 默认值 |
