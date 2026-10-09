@@ -1,5 +1,7 @@
 name: CI
-on: [push, pull_request]
+# Manual only: routine verification happens locally. Run this from the Actions tab
+# or with `gh workflow run CI` when a Linux or macOS runner check is wanted.
+on: workflow_dispatch
 
 jobs:
   verify:
