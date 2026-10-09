@@ -2628,7 +2628,11 @@ mod update_tests {
         let exe = dir.join("ma");
         std::fs::write(&exe, b"old binary").unwrap();
         let payload = candidate("9.9.9");
-        let bytes = archive(&[("ma-9.9.9-aarch64-apple-darwin/ma", payload.as_slice())]);
+        // The asset name and the archive layout both depend on the running platform, so they
+        // are derived rather than hardcoded: this test runs on macOS and Linux CI alike.
+        let target = release_target().expect("tests run on a supported platform");
+        let member = format!("ma-9.9.9-{target}/ma");
+        let bytes = archive(&[(&member, payload.as_slice())]);
         let (api, server) = serve("9.9.9", bytes);
         let (version, path) = install_update(&api, &exe).expect("update should succeed");
         assert_eq!(version, "9.9.9");
@@ -2644,7 +2648,11 @@ mod update_tests {
         assert!(leftovers.is_empty(), "staging file left behind");
         let seen = server.join().unwrap();
         assert!(seen[0].ends_with("/releases/latest"));
-        assert!(seen[1].contains("ma-9.9.9-aarch64-apple-darwin.tar.gz"));
+        assert!(
+            seen[1].contains(&format!("ma-9.9.9-{target}.tar.gz")),
+            "requested {}",
+            seen[1]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
