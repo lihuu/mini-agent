@@ -1,29 +1,29 @@
 # Minimal Agent
 
-[中文](README.md) · [English](README.en.md)
-
 **One model. One tool. One loop.**
 
-`ma` 是一个一次性运行的命令行 Agent：接收任务，调用模型，使用宿主已有的 shell 工具完成工作，输出回答后退出。支持 macOS / Linux，运行时只需要一个二进制文件。
+[中文](README.zh.md) · [English](README.md)
 
-## 安装
+`ma` is a one-shot command-line agent: it takes a task, calls a model, does the work with the shell tools already on the host, prints an answer and exits. macOS and Linux are supported; at runtime it is a single binary.
 
-预编译二进制在 [Releases](https://github.com/lihuu/mini-agent/releases) 页面，下载对应平台后解压即可，无需 Rust：
+## Installation
 
-| 平台 | 产物 |
+Prebuilt binaries are on the [Releases](https://github.com/lihuu/mini-agent/releases) page. Download the one for your platform and unpack it; no Rust toolchain required:
+
+| Platform | Artifact |
 | --- | --- |
-| macOS (Apple Silicon) | `ma-<版本>-aarch64-apple-darwin.tar.gz` |
-| Linux (x86_64) | `ma-<版本>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `ma-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux (x86_64) | `ma-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
-macOS 产物要求 Big Sur（11.0）及以上。Linux 产物动态链接 glibc，实测在 glibc 2.34 及以上的发行版可用（Ubuntu 22.04+、Debian 12+），不支持 Alpine 等 musl 发行版。装好后 `ma --version` 会把这台机器对应的产物与运行要求一并打印出来。完整实测矩阵见[发版流程](docs/releasing.md#平台支持范围实测)。
+The macOS build requires Big Sur (11.0) or later. The Linux build links glibc dynamically and was measured to run on glibc 2.34 and above (Ubuntu 22.04+, Debian 12+); musl distributions such as Alpine are not supported. Once installed, `ma --version` prints the artifact built for that machine along with its runtime requirement. The full measured matrix is in [Releasing](docs/releasing.en.md#measured-platform-support).
 
 ```sh
-tar -xzf ma-<版本>-aarch64-apple-darwin.tar.gz
-mv ma-<版本>-aarch64-apple-darwin/ma ~/.local/bin/
+tar -xzf ma-<version>-aarch64-apple-darwin.tar.gz
+mv ma-<version>-aarch64-apple-darwin/ma ~/.local/bin/
 ma --help
 ```
 
-从源码安装需要 Rust 1.85+ 和 C 编译器：
+Building from source needs Rust 1.85+ and a C compiler:
 
 ```sh
 git clone https://github.com/lihuu/mini-agent.git
@@ -32,17 +32,17 @@ cd mini-agent
 ma --help
 ```
 
-脚本构建 release 版本并安装到 `~/.local/bin`。选这个目录是因为它在 XDG 用户 bin 约定内，且在 `PATH` 上通常排在 `~/.cargo/bin` 之前，后来的同名命令不会静默遮蔽它。若旧副本由 cargo 管理，脚本会一并移除；不是 cargo 管理的文件绝不触碰。
+The script builds a release binary and installs it into `~/.local/bin`. That directory is used because it falls under the XDG user-bin convention and usually precedes `~/.cargo/bin` on `PATH`, so a later command of the same name cannot quietly shadow it. If an older copy is managed by cargo the script removes it; anything cargo does not own is never touched.
 
-`--prefix DIR` 改安装根（二进制落在 `DIR/bin`），`--uninstall` 卸载，`--offline` 禁止 cargo 联网。等价的手工命令是 `cargo install --path . --locked --root ~/.local`。
+`--prefix DIR` changes the install root (the binary lands in `DIR/bin`), `--uninstall` removes it, and `--offline` stops cargo from using the network. The equivalent manual command is `cargo install --path . --locked --root ~/.local`.
 
-运行 `ma` 无需安装 Rust；它使用任务所需的宿主 CLI。
+Running `ma` does not require Rust; it uses whatever host CLIs the task needs.
 
-之后用 `ma --update` 升级到最新发布版：它下载本平台产物、先执行一次 `--version` 校验，版本对得上才替换自身，任何一步失败都保留原二进制。普通运行还会每天检查一次新版本，只在 stderr 提示；`--no-update-check` 可关闭。
+Upgrade later with `ma --update`: it downloads the artifact for this platform, runs it once with `--version` to check it, and replaces itself only when the version matches. Any failure leaves the original binary in place. Ordinary runs also check once a day for a newer release and print a single stderr line; `--no-update-check` turns that off.
 
-## 配置模型
+## Configuring the model
 
-使用支持工具调用的 OpenAI-compatible Chat Completions API，将下面的地址、模型和密钥替换为你的实际配置：
+Use an OpenAI-compatible Chat Completions API that supports tool calling. Replace the endpoint, model and key below with your own:
 
 ```sh
 export BASE_URL='https://your-endpoint.example/v1'
@@ -50,41 +50,41 @@ export MODEL='your-model'
 export API_KEY='your-key'
 ```
 
-`BASE_URL` 是 API 根地址，程序会追加 `/chat/completions`。也可以将连接设置保存到配置文件，见[使用说明](docs/usage.md#配置与输入)。
+`BASE_URL` is the API root; `/chat/completions` is appended. Connection settings can also be stored in a config file, see [Usage](docs/usage.en.md#configuration-and-input).
 
-## 使用
+## Usage
 
-先进入要处理的项目目录。`ma` 以**启动时的当前目录**为工作目录：
+Change into the project you want to work on first. `ma` uses the **current directory at startup** as its workspace:
 
 ```sh
 cd /path/to/your/project
-ma -v '解释这个项目的结构'
+ma -v 'explain the structure of this project'
 ```
 
-`-v` 实时显示模型文本和命令执行过程；最终回答写入 stdout，过程写入 stderr。
+`-v` shows model text and command execution live; the final answer goes to stdout and the process log to stderr.
 
 ```sh
-# 从 stdin 接收补充上下文
-git diff | ma '总结这些修改'
+# Take supplementary context from stdin
+git diff | ma 'summarize these changes'
 
-# 允许修改当前目录及其子目录
-ma -v --write '修复配置文件'
+# Allow writes inside the current directory and its descendants
+ma -v --write 'fix the config file'
 
-# 同时允许 shell 联网
-ma -v --write --net '升级项目依赖'
+# Also allow the shell to use the network
+ma -v --write --net 'upgrade the project dependencies'
 
-# 按名称加载指定 skills；多个名称用英文逗号分隔
-ma --skills code-review,explain '评审并解释这些修改'
+# Load skills by name; separate multiple names with commas
+ma --skills code-review,explain 'review and explain these changes'
 ```
 
-管道输入只存在于对话里，不落盘。上下文超限时程序按代价从小到大恢复：先压缩旧轮次、再截断最新结果、最后才截断原始输入；最后一步会无条件在 stderr 告警，因为被省略的部分无法再读回来。详见[使用说明](docs/usage.md#上下文过长恢复)。
+Piped input exists only in the conversation and never lands on disk. When the context is too long the program recovers in order of increasing cost: compact old turns first, then truncate the newest results, and only then truncate the original input; that last step always warns on stderr, because the omitted part can never be read back. See [Usage](docs/usage.en.md#context-too-long-recovery).
 
-默认拒绝常见写操作和 shell 网络命令，模型 API 请求始终允许。内置 Guard 是尽力而为的命令检查，**不是安全沙箱**；需要强隔离时使用容器或虚拟机。详见[安全说明](SECURITY.md)。
+By default common write operations and shell network commands are refused; model API requests are always allowed. The built-in Guard is a best-effort command check, **not a security sandbox**; use a container or virtual machine when you need real isolation. See [Security](SECURITY.en.md).
 
-完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。发版与平台支持范围见[发版流程](docs/releasing.md)。
+Full options, config file and output contract are in [Usage](docs/usage.en.md), or run `ma --help`. Releasing and platform support are in [Releasing](docs/releasing.en.md).
 
-`--skills` 按目录名从当前项目的 `.agents/skills/`、然后 `~/.agents/skills/` 查找 `SKILL.md`；项目优先，找不到或无法读取的跳过。不传此参数就不加载任何 skill。指定 skills 的完整指令会加入提示词，引用文件按需读取；自定义目录参数尚未支持。详见[skills 使用说明](docs/usage.md#skills)。
+`--skills` looks for `SKILL.md` by directory name, first under `.agents/skills/` in the current project and then under `~/.agents/skills/`; the project wins, and anything missing or unreadable is skipped. Without the flag no skill is loaded. The full instructions of the selected skills are added to the prompt and referenced files are read on demand; custom directory arguments are not supported yet. See [skills in Usage](docs/usage.en.md#skills).
 
 ## License
 
-[MIT](LICENSE)。
+[MIT](LICENSE).

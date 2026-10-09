@@ -38,7 +38,7 @@ A past lesson: the v0.3.2 tag failed `verify` after being pushed, because a unit
 | Job | Contents |
 | --- | --- |
 | `verify` | ubuntu-latest: fmt, clippy (`-D warnings`), `cargo test --release`, and a check that the **tag matches the `Cargo.toml` version** |
-| `build` | Matrix build on macos-latest (`aarch64-apple-darwin`) and ubuntu-latest (`x86_64-unknown-linux-gnu`), each packed into `ma-<version>-<target>.tar.gz` containing `ma`, `LICENSE`, `README.md` and `SECURITY.md`, with a check that the binary is under 10 MB |
+| `build` | Matrix build on macos-latest (`aarch64-apple-darwin`) and ubuntu-latest (`x86_64-unknown-linux-gnu`), each packed into `ma-<version>-<target>.tar.gz` containing `ma`, `LICENSE`, both README halves and both security policies, with a check that the binary is under 10 MB |
 | `release` | Collects the artifacts and publishes them directly with `softprops/action-gh-release`, generating the changelog |
 
 If `verify` fails, `build` does not run (`needs: verify`), so a wrong version number or a failing test never ships an artifact.
@@ -130,7 +130,8 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 triple=$(rustc -vV | sed -n 's/^host: //p')
 name="ma-$version-$triple"
 mkdir -p "dist/$name"
-cp target/release/ma LICENSE README.md SECURITY.md "dist/$name/"
+cp target/release/ma LICENSE "dist/$name/"
+cp README.md README.zh.md SECURITY.md SECURITY.en.md "dist/$name/"
 chmod +x "dist/$name/ma"
 (cd dist && tar -czf "$name.tar.gz" "$name")
 ```

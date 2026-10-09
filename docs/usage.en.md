@@ -2,7 +2,7 @@
 
 [中文](usage.md) · English
 
-Installation and day-to-day use are in the [README](../README.en.md). The examples below assume `ma` is installed and on `PATH`.
+Installation and day-to-day use are in the [README](../README.md). The examples below assume `ma` is installed and on `PATH`.
 
 ## Build only, without installing
 

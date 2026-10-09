@@ -2,7 +2,7 @@
 
 [中文](usage.md) · [English](usage.en.md)
 
-安装与日常用法见 [README](../README.md)。以下示例假定 `ma` 已安装并在 `PATH` 中。
+安装与日常用法见 [README](../README.zh.md)。以下示例假定 `ma` 已安装并在 `PATH` 中。
 
 ## 只构建，不安装
 

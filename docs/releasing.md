@@ -40,7 +40,7 @@ cargo test --locked --release
 | Job | 内容 |
 | --- | --- |
 | `verify` | ubuntu-latest：fmt、clippy（`-D warnings`）、`cargo test --release`，并校验 **tag 与 `Cargo.toml` 版本一致** |
-| `build` | 矩阵构建 macos-latest（`aarch64-apple-darwin`）与 ubuntu-latest（`x86_64-unknown-linux-gnu`），各打成 `ma-<版本>-<target>.tar.gz`，内含 `ma`、`LICENSE`、`README.md`、`SECURITY.md`，并检查二进制 < 10 MB |
+| `build` | 矩阵构建 macos-latest（`aarch64-apple-darwin`）与 ubuntu-latest（`x86_64-unknown-linux-gnu`），各打成 `ma-<版本>-<target>.tar.gz`，内含 `ma`、`LICENSE`、`README.md` + `README.zh.md`、`SECURITY.md` + `SECURITY.en.md`，并检查二进制 < 10 MB |
 | `release` | 汇总产物，用 `softprops/action-gh-release` 直接发布并生成 changelog |
 
 `verify` 失败则 `build` 不运行（`needs: verify`），因此版本号写错或测试挂掉时不会发出任何产物。
@@ -132,7 +132,8 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 triple=$(rustc -vV | sed -n 's/^host: //p')
 name="ma-$version-$triple"
 mkdir -p "dist/$name"
-cp target/release/ma LICENSE README.md SECURITY.md "dist/$name/"
+cp target/release/ma LICENSE "dist/$name/"
+cp README.md README.zh.md SECURITY.md SECURITY.en.md "dist/$name/"
 chmod +x "dist/$name/ma"
 (cd dist && tar -czf "$name.tar.gz" "$name")
 ```

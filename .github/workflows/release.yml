@@ -51,7 +51,10 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           name="ma-$version-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/ma" LICENSE README.md SECURITY.md "dist/$name/"
+          # Both README halves and both security policies ship, so a tarball carries
+          # documentation in either language rather than only the repository default.
+          cp "target/${{ matrix.target }}/release/ma" LICENSE "dist/$name/"
+          cp README.md README.zh.md SECURITY.md SECURITY.en.md "dist/$name/"
           chmod +x "dist/$name/ma"
           (cd "dist" && tar -czf "$name.tar.gz" "$name")
           rm -rf "dist/$name"
