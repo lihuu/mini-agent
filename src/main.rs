@@ -2332,21 +2332,13 @@ fn maybe_notify_update(c: &Config) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let recent = std::fs::read_to_string(&stamp)
-        .ok()
-        .and_then(|text| text.trim().parse::<u64>().ok())
-        .is_some_and(|last| now.saturating_sub(last) < 24 * 60 * 60);
-    if recent {
-        return;
-    }
-    if let Some(parent) = stamp.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&stamp, now.to_string());
-    let Ok(version) = update_latest_version() else {
-        return;
-    };
-    if newer_version(&version, env!("CARGO_PKG_VERSION")) {
+    let report = update_notice(
+        &stamp,
+        now,
+        || update_latest_version(""),
+        || env!("CARGO_PKG_VERSION"),
+    );
+    if let Some(version) = report {
         eprintln!(
             "ma: {version} is available (running {}); run `ma --update`",
             env!("CARGO_PKG_VERSION")
@@ -2354,15 +2346,44 @@ fn maybe_notify_update(c: &Config) {
     }
 }
 
-fn update_latest_version() -> Result<String, String> {
+// Records the check time before requesting, so a failing endpoint cannot cause a request on
+// every single run. Returns the newer version only when one is actually available.
+fn update_notice(
+    stamp: &Path,
+    now: u64,
+    latest: impl FnOnce() -> Result<String, String>,
+    current: impl FnOnce() -> &'static str,
+) -> Option<String> {
+    let recent = std::fs::read_to_string(stamp)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .is_some_and(|last| now.saturating_sub(last) < 24 * 60 * 60);
+    if recent {
+        return None;
+    }
+    if let Some(parent) = stamp.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(stamp, now.to_string());
+    let version = latest().ok()?;
+    newer_version(&version, current()).then_some(version)
+}
+
+fn update_latest_version(api_base: &str) -> Result<String, String> {
+    let url = if api_base.is_empty() {
+        RELEASES_API
+    } else {
+        api_base
+    };
     let client = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
-        .max_redirects(0)
+        .max_redirects(if api_base.is_empty() { 0 } else { 5 })
+        .https_only(api_base.is_empty())
         .max_idle_connections(0)
         .build()
         .new_agent();
-    tag_name(&parse_json(&fetch(&client, RELEASES_API, true)?)?)
+    tag_name(&parse_json(&fetch(&client, url, true)?)?)
 }
 
 fn main() -> ExitCode {
@@ -2678,6 +2699,52 @@ mod update_tests {
             "staging file left behind after failure"
         );
         let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The notice is the only part of the daily check a user ever sees, so it is asserted rather
+    // than assumed: the once-a-day gate, the newer-than test and the message all matter.
+    #[test]
+    fn daily_check_notices_a_newer_release_once_a_day() {
+        let dir = temp_dir();
+        let stamp = dir.join("last-update-check");
+        let day = 24 * 60 * 60;
+
+        // No stamp yet, and a newer version exists.
+        let notice = update_notice(&stamp, 1_000_000, || Ok("0.4.0".into()), || "0.3.3");
+        assert_eq!(notice.as_deref(), Some("0.4.0"));
+        assert_eq!(
+            std::fs::read_to_string(&stamp).unwrap().trim(),
+            "1000000",
+            "the check time must be recorded"
+        );
+
+        // Same day: the gate suppresses the request entirely.
+        let mut asked = false;
+        let notice = update_notice(
+            &stamp,
+            1_000_000 + day - 1,
+            || {
+                asked = true;
+                Ok("0.4.0".into())
+            },
+            || "0.3.3",
+        );
+        assert_eq!(notice, None);
+        assert!(!asked, "no request may be made within the same day");
+
+        // A day later it asks again, but the running version is the newer one.
+        let notice = update_notice(&stamp, 1_000_000 + day, || Ok("0.3.3".into()), || "0.3.3");
+        assert_eq!(notice, None, "an equal version is not an update");
+
+        // A failing endpoint records nothing extra and reports nothing.
+        let notice = update_notice(
+            &stamp,
+            1_000_000 + 2 * day,
+            || Err("offline".into()),
+            || "0.3.3",
+        );
+        assert_eq!(notice, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
