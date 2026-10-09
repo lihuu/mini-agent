@@ -1579,7 +1579,147 @@ fn call_model(agent: &ureq::Agent, c: &Config, messages: &[Value]) -> Result<Val
     Ok(response)
 }
 
-fn trim_history(messages: &mut Vec<Value>) -> Option<usize> {
+// Recovery is a ladder ordered by information cost. Deleting whole old turns was not enough
+// for the shape this tool exists for -- `git diff | ma 'summarize'` -- because the system
+// prompt and the original piped input are never trimmable and dominate the window exactly
+// when recovery is needed; measured on that shape the old code freed 3-10% and a single fat
+// turn freed nothing at all. Each tier below loses strictly more than the previous one, so a
+// tier only runs when the earlier tiers cannot help. Every tier keeps exactly two leading
+// messages (system, user) and rebuilds a single summary slot at index 2, so recoveries never
+// accumulate state and a retry never grows the history it is trying to shrink.
+const LEDGER_LIMIT: usize = 64 * 1024;
+const LEDGER_MARKER: &str = "Earlier execution records were compacted";
+const RESULT_KEEP: usize = 2 * 1024;
+const RESULT_MARKER: &str = "tool result truncated";
+const INPUT_KEEP: usize = 32 * 1024;
+const INPUT_MARKER: &str = "original input truncated";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    Compact,
+    TruncateLatest,
+    TruncateInput,
+}
+
+impl Recovery {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compacted old turns",
+            Self::TruncateLatest => "truncated the newest tool results",
+            Self::TruncateInput => "truncated the original input",
+        }
+    }
+}
+
+fn json_bytes(value: &Value) -> usize {
+    value.to_string().len()
+}
+
+fn messages_bytes(messages: &[Value]) -> usize {
+    messages.iter().map(json_bytes).sum()
+}
+
+// Byte limits must land on UTF-8 boundaries: tool output is arbitrary bytes carried as text.
+fn boundary_floor(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+fn boundary_ceil(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at < text.len() && !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(limit).collect::<String>())
+}
+
+// Keep the head and the tail and name the hole: a truncated but structurally valid record
+// tells the model what it can no longer see, which is more useful than a deleted one. The
+// marker makes the result self-identifying, which is what lets the ladder stay idempotent.
+fn head_tail(text: &str, head: usize, tail: usize, marker: &str, note: &str) -> (String, usize) {
+    if text.len() <= head + tail {
+        return (text.to_owned(), 0);
+    }
+    let head_end = boundary_floor(text, head);
+    let tail_start = boundary_ceil(text, text.len() - tail);
+    let omitted = tail_start - head_end;
+    (
+        format!(
+            "{}\n[{marker}: {omitted} bytes omitted — {note}]\n{}",
+            &text[..head_end],
+            &text[tail_start..]
+        ),
+        omitted,
+    )
+}
+
+// One ledger line per tool call, derived only from records the process already holds: no model
+// call, no tokenizer, no guessing, and the same input always produces the same line.
+fn tool_call_entries(message: &Value, results: &[Value]) -> Vec<String> {
+    let calls = message["tool_calls"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if calls.is_empty() {
+        return vec!["- assistant turn with no tool calls".to_owned()];
+    }
+    calls
+        .iter()
+        .map(|call| {
+            let command = call["function"]["arguments"]
+                .as_str()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|args| args["command"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "<unreadable command>".to_owned());
+            let command = clip(&command, 160);
+            let result = call["id"].as_str().and_then(|id| {
+                results
+                    .iter()
+                    .find(|m| m["role"] == "tool" && m["tool_call_id"].as_str() == Some(id))
+                    .and_then(|m| serde_json::from_str::<Value>(m["content"].as_str()?).ok())
+            });
+            let Some(result) = result else {
+                return format!("- {command} -> <no result recorded>");
+            };
+            let error = result["error"]
+                .as_str()
+                .map_or(String::new(), |e| format!(" error={}", clip(e, 80)));
+            format!(
+                "- {command} -> exit={} stdout={}B stderr={}B{}{}{error}",
+                result["exit_code"]
+                    .as_i64()
+                    .map_or_else(|| "?".to_owned(), |code| code.to_string()),
+                result["stdout"].as_str().map_or(0, str::len),
+                result["stderr"].as_str().map_or(0, str::len),
+                if result["timed_out"].as_bool() == Some(true) {
+                    " timeout"
+                } else {
+                    ""
+                },
+                if result["truncated"].as_bool() == Some(true) {
+                    " truncated"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect()
+}
+
+// Tier 1: replace every turn except the newest with a bounded skeleton, carried forward from
+// the previous ledger so nothing is lost across repeated recoveries. The ledger lives in one
+// slot that is rebuilt from scratch each time, so it cannot grow without bound.
+fn compact_history(messages: &mut Vec<Value>) -> Option<usize> {
     let turns: Vec<usize> = messages
         .iter()
         .enumerate()
@@ -1587,26 +1727,211 @@ fn trim_history(messages: &mut Vec<Value>) -> Option<usize> {
         .filter_map(|(i, message)| (message["role"] == "assistant").then_some(i))
         .collect();
     if turns.len() < 2 {
-        return None; // Keep the original task and at least the latest complete tool turn.
+        return None; // Keep the original task and the latest complete tool turn.
     }
-    let bytes = |slice: &[Value]| slice.iter().map(|m| m.to_string().len()).sum::<usize>();
-    let target = bytes(&messages[2..]) / 2;
-    let mut removed_bytes = bytes(&messages[2..turns[0]]);
-    let mut removed_turns = 0;
-    let mut end = turns[1];
-    for pair in turns.windows(2) {
-        removed_bytes += bytes(&messages[pair[0]..pair[1]]);
-        removed_turns += 1;
-        end = pair[1];
-        if removed_bytes >= target {
+    let keep_from = *turns.last().unwrap();
+    let results = &messages[2..keep_from];
+    // Newest first, so hitting the byte cap drops the oldest entries rather than the newest.
+    let mut entries = Vec::new();
+    for &start in turns[..turns.len() - 1].iter().rev() {
+        entries.extend(tool_call_entries(&messages[start], results));
+    }
+    // A previous ledger covers turns that are already gone; carry it forward after the live
+    // turns, which keeps the newest-first order and cannot duplicate a turn still present.
+    if let Some(previous) = messages
+        .get(2)
+        .filter(|m| m["role"] == "user")
+        .and_then(|m| m["content"].as_str())
+        .filter(|text| text.starts_with(LEDGER_MARKER))
+    {
+        entries.extend(
+            previous
+                .lines()
+                .filter(|line| line.starts_with("- "))
+                .map(str::to_owned),
+        );
+    }
+    let total = entries.len();
+    let mut body = String::new();
+    let mut kept = 0;
+    for entry in &entries {
+        if body.len() + entry.len() + 1 > LEDGER_LIMIT {
             break;
         }
+        body.push_str(entry);
+        body.push('\n');
+        kept += 1;
     }
-    // Each assistant tool call and all of its tool results are removed together.
-    // This also replaces a previous notice, avoiding accumulation across recoveries.
-    messages.drain(2..end);
-    messages.insert(2, json!({"role":"user", "content":"Earlier execution records were removed after a context-limit error. The original task and recent records remain. Do not assume earlier commands succeeded or repeat side effects without checking the current workspace state. Continue the original task, rechecking files when needed."}));
-    Some(removed_turns)
+    if kept == 0 {
+        return None;
+    }
+    let mut ledger = format!(
+        "{LEDGER_MARKER} after a context-limit error; nothing was re-run and no turn was deleted. \
+         Commands and results are summarized below, newest first. Do not assume these commands \
+         succeeded, and re-check the workspace before repeating any side effect."
+    );
+    ledger.push_str(&format!(
+        "\nCompacted {} turn(s); {kept} of {total} tool call(s) listed{}.\n",
+        turns.len() - 1,
+        if total > kept {
+            "; the oldest entries were dropped from this summary"
+        } else {
+            ""
+        }
+    ));
+    ledger.push_str(&body);
+    let mut next = Vec::with_capacity(messages.len());
+    next.extend_from_slice(&messages[..2]);
+    next.push(json!({"role": "user", "content": ledger}));
+    next.extend_from_slice(&messages[keep_from..]);
+    *messages = next;
+    Some(turns.len() - 1)
+}
+
+// Tier 2: shrink the captured streams of the newest turn in place, keeping exit_code, the
+// timeout/truncation flags and every tool_call_id pairing intact. The assistant message that
+// carries tool_calls is never touched, so the API contract cannot break here.
+fn truncate_latest_results(messages: &mut [Value]) -> Option<usize> {
+    let start = messages
+        .iter()
+        .rposition(|message| message["role"] == "assistant")?;
+    let mut changed = 0;
+    for message in &mut messages[start + 1..] {
+        if message["role"] != "tool" {
+            continue;
+        }
+        let Some(content) = message["content"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(mut result) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        if !result.is_object() {
+            continue;
+        }
+        let mut omitted = 0;
+        for key in ["stdout", "stderr"] {
+            let Some(text) = result[key].as_str().map(str::to_owned) else {
+                continue;
+            };
+            let (kept, cut) = head_tail(
+                &text,
+                RESULT_KEEP,
+                RESULT_KEEP,
+                RESULT_MARKER,
+                "after a context-limit error; the process has exited, so the full output is not retrievable",
+            );
+            if cut > 0 {
+                result[key] = json!(kept);
+                omitted += cut;
+            }
+        }
+        if omitted == 0 {
+            continue;
+        }
+        result["truncated"] = json!(true);
+        result["omitted_bytes"] = json!(omitted);
+        message["content"] = json!(result.to_string());
+        changed += 1;
+    }
+    (changed > 0).then_some(changed)
+}
+
+// Whether the newest turn still has a captured stream worth trimming. The `omitted_bytes`
+// marker decides, not a size comparison: a trimmed payload carries its marker and is slightly
+// larger than head+tail, so a size test would report the same bytes as trimmable forever.
+fn latest_needs_trimming(messages: &[Value]) -> bool {
+    let Some(start) = messages
+        .iter()
+        .rposition(|message| message["role"] == "assistant")
+    else {
+        return false;
+    };
+    messages[start + 1..]
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .any(|message| {
+            serde_json::from_str::<Value>(message["content"].as_str().unwrap_or_default())
+                .ok()
+                .is_some_and(|result| {
+                    result["omitted_bytes"].is_null()
+                        && ["stdout", "stderr"].iter().any(|key| {
+                            result[*key]
+                                .as_str()
+                                .is_some_and(|text| text.len() > RESULT_KEEP * 2)
+                        })
+                })
+        })
+}
+
+fn input_is_within_budget(messages: &[Value]) -> bool {
+    messages
+        .get(1)
+        .and_then(|m| m["content"].as_str())
+        .is_none_or(|input| input.contains(INPUT_MARKER))
+}
+
+// Tier 3: this is data loss. Piped input exists only in messages[1] and never reached the
+// filesystem, so the omitted middle cannot be read again -- unlike workspace files, which the
+// model can always re-read. The caller warns on stderr unconditionally for this tier.
+fn truncate_input(messages: &mut [Value]) -> Option<usize> {
+    let input = messages.get(1)?.get("content")?.as_str()?.to_owned();
+    let (kept, omitted) = head_tail(
+        &input,
+        INPUT_KEEP,
+        INPUT_KEEP,
+        INPUT_MARKER,
+        "the omitted middle is not on disk and cannot be read again, so say so in the final answer if it matters",
+    );
+    if omitted == 0 {
+        return None;
+    }
+    messages[1]["content"] = json!(kept);
+    Some(omitted)
+}
+
+const RECOVERY_TIERS: usize = 3;
+
+fn apply_recovery(messages: &mut Vec<Value>, tier: usize) -> Option<(Recovery, String)> {
+    match tier {
+        0 => compact_history(messages).map(|turns| (Recovery::Compact, format!("{turns} turn(s)"))),
+        1 if latest_needs_trimming(messages) => truncate_latest_results(messages)
+            .map(|results| (Recovery::TruncateLatest, format!("{results} result(s)"))),
+        _ if !input_is_within_budget(messages) => truncate_input(messages)
+            .map(|bytes| (Recovery::TruncateInput, format!("{bytes} bytes"))),
+        _ => None,
+    }
+}
+
+// Walk the ladder from `tier` and apply the first step that actually changes the history. A new
+// context error afterwards starts from the step that just ran, so a step that still helps is
+// retried before a more destructive one is spent -- compaction keeps working until only one
+// turn is left, and only then does the ladder reach the newest results and the original input.
+fn recover_context(messages: &mut Vec<Value>, tier: usize) -> Option<(Recovery, String, usize)> {
+    for step in tier..RECOVERY_TIERS {
+        if let Some((recovery, detail)) = apply_recovery(messages, step) {
+            return Some((recovery, detail, step));
+        }
+    }
+    None
+}
+
+// Name the buckets that recovery cannot touch, so a failure says why instead of just "no".
+fn irreducible_report(c: &Config, messages: &[Value]) -> String {
+    let latest = messages
+        .iter()
+        .rposition(|m| m["role"] == "assistant")
+        .map_or(0, |start| messages[start..].iter().map(json_bytes).sum());
+    let skills: usize = c.skills.iter().map(|s| s.content.len()).sum();
+    format!(
+        "cannot shrink further: system {} B (skills {} B), original input {} B, latest turn {} B, total {} B; \
+         recovery never rewrites the system prompt, the original input, or the newest complete turn",
+        json_bytes(&messages[0]),
+        skills,
+        json_bytes(&messages[1]),
+        latest,
+        messages_bytes(messages)
+    )
 }
 
 fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
@@ -1624,7 +1949,7 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
     let mut requests = 0;
     while requests < c.max_steps {
         let started = Instant::now();
-        let mut retried = false;
+        let mut recovery_tier = 0;
         let response = loop {
             requests += 1;
             trace(
@@ -1634,12 +1959,6 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
             match call_model(&agent, c, &messages) {
                 Ok(response) => break response,
                 Err(ModelError::ContextTooLong) => {
-                    if retried {
-                        return Err((
-                            1,
-                            "model context too long after history trimming; retry failed".into(),
-                        ));
-                    }
                     if requests == c.max_steps {
                         return Err((
                             3,
@@ -1649,14 +1968,31 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
                             ),
                         ));
                     }
-                    let removed = trim_history(&mut messages).ok_or_else(|| (1, "model context too long; no old complete turns can be removed while preserving the original task and latest turn".into()))?;
+                    let Some((step, detail, next)) = recover_context(&mut messages, recovery_tier)
+                    else {
+                        return Err((
+                            1,
+                            format!(
+                                "model context too long; {}",
+                                irreducible_report(c, &messages)
+                            ),
+                        ));
+                    };
+                    // Tier 3 destroys piped data that exists nowhere else. That boundary must
+                    // reach the user even without --verbose, so it is not a trace.
+                    if step == Recovery::TruncateInput {
+                        eprintln!(
+                            "ma: warning: context recovery truncated the original input ({detail}); the omitted middle is not on disk and cannot be read again"
+                        );
+                    }
                     trace(
                         c,
                         format_args!(
-                            "context too long: removed {removed} old turn(s); retrying model once"
+                            "context too long: {} ({detail}); retrying model once",
+                            step.label()
                         ),
                     );
-                    retried = true;
+                    recovery_tier = next;
                 }
                 Err(error) => return Err((1, error.to_string())),
             }

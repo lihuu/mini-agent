@@ -18,7 +18,7 @@
 ## 运行契约
 
 - `--base-url`/`BASE_URL`、`--api-key`/`API_KEY`、`--model`/`MODEL`；模型设置只读取这三个环境变量，无命名前缀或旧名称后备。配置文件以更低的优先级提供同样的三个键。
-- `--skills name1,name2` 只按目录名查找启动 cwd 的 `.agents/skills/` 和 `$HOME/.agents/skills/`；项目优先，读取失败回退，仍失败则跳过。不传就不加载。完整 `SKILL.md` 和实际目录进入系统提示词的 skills 段，保持两条初始消息（system、user）及现有裁剪契约。资源按需由 shell 读取，不预先运行脚本、不解析权限 frontmatter、不注册新工具。单文件 64 KiB、原始指令总量 1 MiB；加载和跳过仅在 verbose 记录。自定义目录输入尚未支持。
+- `--skills name1,name2` 只按目录名查找启动 cwd 的 `.agents/skills/` 和 `$HOME/.agents/skills/`；项目优先，读取失败回退，仍失败则跳过。不传就不加载。完整 `SKILL.md` 和实际目录进入系统提示词的 skills 段，保持两条初始消息（system、user）及现有恢复契约；skills 属于不可约简部分，只计入退出诊断，不被自动截断。资源按需由 shell 读取，不预先运行脚本、不解析权限 frontmatter、不注册新工具。单文件 64 KiB、原始指令总量 1 MiB；加载和跳过仅在 verbose 记录。自定义目录输入尚未支持。
 - Base URL 是 API 根目录，例如 `https://example.com/v1`，客户端追加 `/chat/completions`。
 - Prompt 来自位置参数；非终端 stdin 作为补充文本，也支持仅 stdin。限制输入为 1 MiB；shell stdin 固定关闭，避免交互等待。
 - help / version 可出现在 Prompt 后，在配置和输入读取前处理；跳过其他选项的值，并以 `--` 为 Prompt 分界。
@@ -32,8 +32,9 @@
 - SIGINT / SIGTERM / SIGHUP 中断时清理当前工具进程组，按 `128 + signal` 退出；SIGKILL 和脱离进程组的进程不作强保证。
 - 工具结果采用 JSON 字符串，包含 stdout、stderr、exit_code、timed_out、truncated；拒绝和执行错误也作为工具结果反馈模型。
 - 多工具调用按返回顺序执行并逐条反馈。assistant 消息（含 reasoning_content 等兼容字段）保留；校验工具 ID、工具名、参数和最终 finish_reason，防止错误结束或执行未知工具。
-- 普通 HTTP 错误不重试；只有明确上下文过长错误触发按完整轮次裁剪旧历史，保留 system、原始 user 和最新工具轮次。尽量移除约一半历史字节，插入可替换的裁剪提示，然后重试模型一次；不重放 shell，重试计入 max_steps。无可裁剪历史或重试仍失败则退出。不做主动裁剪、模型摘要、tokenizer 或新配置。
+- 普通 HTTP 错误不重试；只有明确上下文过长错误触发恢复。恢复是按信息代价排序的三级阶梯，每级保留 system、原始 user 和最新工具轮次的不变量尽量靠后：①把最新一轮以外的工具调用压缩成单行骨架（命令、exit code、stdout/stderr 字节数、超时与截断标记），写入索引 2 的可替换摘要槽，重建而非追加，上限 64 KiB，只丢输出正文、不删轮次、不重跑命令；②截断最新一轮工具结果的头尾各 2 KiB，保留 exit code、状态标记和 tool_call_id 配对，承载 tool_calls 的 assistant 消息不动；③截断原始输入的头尾各 32 KiB。第 3 级是数据损毁（管道输入从未落盘、被省略部分不可重取），无条件在 stderr 告警，不受 verbose 控制。每级留下可识别标记，阶梯据此保证幂等、不重复裁剪、不累积摘要槽。每次上下文失败执行一级并重试模型一次，新错误从刚执行的那级继续；三级都用尽仍无法改变历史时报告各不可约简部分的字节数后退出。不重放 shell，重试计入 max_steps。不做主动裁剪、模型摘要、tokenizer 或新配置。
+- 恢复不改写系统提示词，因此已加载 skills 的指令不会被上下文恢复移除；skills 总量（1 MiB）与原始输入一样属于不可约简部分，其字节数只在退出诊断中报告，不被自动截断。
 
 ## 验收
 
-端到端本地 mock HTTP 测试验证 wire protocol、stdin、多轮/多工具、权限拒绝、步骤上限、错误和超时，以及 SSE 传输分片、交错工具参数、断流、总字节预算和上游未结束前可见的 verbose 文本；真实 shell 测试验证实时输出、超时、截断和目录边界。运行 fmt、clippy、cargo test、release build 并测量体积：目标 <5 MB，硬限制 <10 MB。macOS 本机验收，Linux 用 CI 或一次性容器验收；没有实际运行的跨平台或私人 endpoint 测试不得声称通过。
+端到端本地 mock HTTP 测试验证 wire protocol、stdin、多轮/多工具、权限拒绝、步骤上限、错误和超时，以及 SSE 传输分片、交错工具参数、断流、总字节预算和上游未结束前可见的 verbose 文本；上下文恢复部分验证三级阶梯的推进顺序与幂等（重复恢复不重复裁剪、不累积摘要槽）、工具调用与结果 ID 配对在截断后仍然完整、原始输入截断的无条件 stderr 告警、退出诊断中的各不可约简桶字节数，以及普通 HTTP 错误绝不改动历史；真实 shell 测试验证实时输出、超时、截断和目录边界。运行 fmt、clippy、cargo test、release build 并测量体积：目标 <5 MB，硬限制 <10 MB。macOS 本机验收，Linux 用 CI 或一次性容器验收；没有实际运行的跨平台或私人 endpoint 测试不得声称通过。

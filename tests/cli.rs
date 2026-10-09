@@ -1380,7 +1380,7 @@ fn context_error() -> Value {
 }
 
 #[test]
-fn context_limit_trims_complete_old_turns_without_reexecuting_shell() {
+fn context_limit_compacts_complete_old_turns_without_reexecuting_shell() {
     let ws = Workspace::new();
     let (out, req) = run(
         vec![
@@ -1410,15 +1410,22 @@ fn context_limit_trims_complete_old_turns_without_reexecuting_shell() {
     assert_eq!(req[3]["messages"][0], req[2]["messages"][0]);
     assert_eq!(req[3]["messages"][1], req[2]["messages"][1]);
     let retry = req[3]["messages"].as_array().unwrap();
+    // The newest turn survives verbatim as two messages (assistant + its tool result), and the
+    // compaction slot replaces the older turn, so the shape is system + user + slot + 2.
     assert_eq!(retry.len(), 5);
     assert_eq!(retry[2]["role"], "user");
-    assert!(retry[2]["content"].as_str().unwrap().contains("removed"));
+    let ledger = retry[2]["content"].as_str().unwrap();
+    assert!(ledger.contains("compacted"));
+    assert!(ledger.contains("printf x >> count"));
+    assert!(ledger.contains("exit=0"));
     assert_eq!(retry[3], req[2]["messages"][5]);
     assert_eq!(retry[4], req[2]["messages"][6]);
     assert_eq!(req[3]["tools"], req[2]["tools"]);
+    // Compaction must not re-run anything: the old command ran exactly once.
+    assert_eq!(std::fs::read(ws.0.join("count")).unwrap(), b"xy");
     let log = String::from_utf8_lossy(&out.stderr);
     assert!(log.contains("context too long"));
-    assert!(log.contains("removed 1 old turn"));
+    assert!(log.contains("compacted old turns"));
 }
 
 #[test]
@@ -1454,10 +1461,20 @@ fn context_recovery_preserves_recent_multi_tool_turn_and_can_recur() {
     assert_eq!(first_retry[3]["tool_calls"].as_array().unwrap().len(), 2);
     assert_eq!(first_retry[4]["tool_call_id"], "one");
     assert_eq!(first_retry[5]["tool_call_id"], "two");
+    // The 'old' turn is gone but survives as summarized lines, so the retry can still refer to it.
+    let ledger = first_retry[2]["content"].as_str().unwrap();
+    assert!(ledger.contains("printf old") && ledger.contains("exit=0"));
     let next_retry = req[5]["messages"].as_array().unwrap();
     assert_eq!(next_retry.len(), 5);
     assert_eq!(next_retry[3]["tool_calls"][0]["id"], "new");
     assert_eq!(next_retry[4]["tool_call_id"], "new");
+    // The second recovery rebuilds the ledger in place: it must not accumulate a second slot,
+    // and the earlier ledger's contents must still be reachable.
+    let ledger = next_retry[2]["content"].as_str().unwrap();
+    assert!(ledger.contains("printf old"));
+    assert!(ledger.contains("printf one") && ledger.contains("printf two"));
+    assert_eq!(ledger.matches("printf old").count(), 1);
+    assert_eq!(next_retry.iter().filter(|m| m["role"] == "user").count(), 2);
     assert_eq!(out.stdout, b"done\n");
     assert!(out.stderr.is_empty());
 }
@@ -1495,7 +1512,10 @@ fn context_recovery_retries_once_and_other_http_errors_never_trim() {
         assert!(out.stdout.is_empty());
         assert_eq!(req.len(), 3 + retries, "{status}");
         if retries > 0 {
-            assert!(String::from_utf8_lossy(&out.stderr).contains("after history trimming"));
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("cannot shrink further"),
+                "{status}: a retry that fails must report the irreducible buckets"
+            );
         } else {
             assert!(
                 String::from_utf8_lossy(&out.stderr).contains(status.split(' ').next().unwrap())
@@ -1517,7 +1537,11 @@ fn context_error_without_old_turns_exits_clearly() {
         assert_eq!(out.status.code(), Some(1));
         assert!(out.stdout.is_empty());
         assert_eq!(req.len(), turns + 1);
-        assert!(String::from_utf8_lossy(&out.stderr).contains("no old complete turns"));
+        // The exhaustion path must name the buckets that recovery cannot rewrite rather than
+        // reporting a bare "cannot recover".
+        let log = String::from_utf8_lossy(&out.stderr);
+        assert!(log.contains("cannot shrink further"));
+        assert!(log.contains("system ") && log.contains("latest turn"));
     }
 }
 
@@ -1556,7 +1580,10 @@ fn context_error_detection_requires_explicit_upstream_signal() {
     ] {
         let (out, _) = run(vec![("400 Bad Request", error)], &["inspect"], "", &ws);
         assert_eq!(out.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("no old complete turns"));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("cannot shrink further"),
+            "an explicit context signal must reach the recovery report"
+        );
     }
 }
 
@@ -2383,4 +2410,212 @@ fn skills_resolve_linked_directories_without_allowing_resource_symlink_escape() 
             .unwrap()
             .contains("outside workspace")
     );
+}
+
+// Recovery tiers are ordered by information cost, so a tier that cannot help must not fire:
+// truncating the newest results while old turns are still compactable would destroy evidence
+// the ladder never needed to spend. This asserts the exact escalation order.
+#[test]
+fn recovery_escalates_one_tier_per_context_error_and_compacts_first() {
+    let ws = Workspace::new();
+    // The newest turn must carry a large captured stream, otherwise tier 2 has nothing to
+    // spend and the ladder would be justified in stopping -- that is a separate case below.
+    std::fs::write(ws.0.join("fat.txt"), "f".repeat(100 * 1024)).unwrap();
+    let mut replies = vec![("200 OK", tools(&[("old", "printf old")]))];
+    replies.push(("200 OK", tools(&[("mid", "printf step")])));
+    replies.push(("200 OK", tools(&[("recent", "cat fat.txt")])));
+    // First context error: tier 1 must fire and tier 2 must stay unused.
+    replies.push(("400 Bad Request", context_error()));
+    // The retry is rejected too, so tier 2 now applies to the newest turn.
+    replies.push(("400 Bad Request", context_error()));
+    replies.push(("200 OK", final_response("done")));
+    let (out, req) = run(replies, &["-v", "--max-steps", "6", "inspect"], "", &ws);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Requests: three tool turns, the first error, its retry rejected, then the final answer.
+    assert_eq!(req.len(), 6);
+
+    let first = req[4]["messages"].as_array().unwrap();
+    let ledger = first[2]["content"].as_str().unwrap();
+    assert!(ledger.contains("compacted"));
+    assert!(ledger.contains("printf step"));
+    // Tier 1 keeps the newest turn verbatim: its tool result is still the original JSON blob.
+    let newest = first
+        .iter()
+        .find(|m| m["tool_call_id"] == "recent")
+        .unwrap();
+    assert!(!newest["content"].as_str().unwrap().contains("omitted"));
+
+    // After the second error the newest result is trimmed, but its structure must survive.
+    let second = req[5]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["tool_call_id"] == "recent")
+        .unwrap();
+    let trimmed: Value = serde_json::from_str(second["content"].as_str().unwrap()).unwrap();
+    assert_eq!(trimmed["exit_code"], 0);
+    assert_eq!(trimmed["truncated"], true);
+    assert!(trimmed["omitted_bytes"].as_u64().unwrap() > 0);
+    // Pairing must hold: every tool_call in every assistant turn still has its result.
+    for request in &req {
+        let messages = request["messages"].as_array().unwrap();
+        for message in messages.iter().filter(|m| !m["tool_calls"].is_null()) {
+            for call in message["tool_calls"].as_array().unwrap() {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|m| { m["role"] == "tool" && m["tool_call_id"] == call["id"] }),
+                    "orphaned tool_call {}",
+                    call["id"]
+                );
+            }
+        }
+    }
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("compacted old turns"));
+    assert!(log.contains("truncated the newest tool results"));
+}
+
+// A fat newest turn makes tier 1 useless and must not be attempted forever: the ladder falls
+// through to trimming the results themselves, which the delete-only design could never reach.
+#[test]
+fn recovery_reaches_newest_turn_when_compaction_cannot_help() {
+    let ws = Workspace::new();
+    std::fs::write(ws.0.join("fat.txt"), "x".repeat(300 * 1024)).unwrap();
+    let (out, req) = run(
+        vec![
+            ("200 OK", tools(&[("recent", "cat fat.txt")])),
+            ("400 Bad Request", context_error()),
+            ("200 OK", final_response("done")),
+        ],
+        &["-v", "--max-steps", "3", "inspect"],
+        "",
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let retry = req[2]["messages"].as_array().unwrap();
+    let result: Value = serde_json::from_str(retry[3]["content"].as_str().unwrap()).unwrap();
+    // The assistant turn keeps its tool_calls, only the captured stream collapses.
+    assert_eq!(retry[2]["tool_calls"][0]["id"], "recent");
+    assert_eq!(retry[3]["tool_call_id"], "recent");
+    assert_eq!(result["truncated"], true);
+    assert!(
+        result["stdout"].as_str().unwrap().len() < 8 * 1024,
+        "trimmed stdout must collapse to head+tail, got {} bytes",
+        result["stdout"].as_str().unwrap().len()
+    );
+    assert!(result["stdout"].as_str().unwrap().contains("omitted"));
+    assert_eq!(out.stdout, b"done\n");
+}
+
+// Tier 3 is data loss on input that exists nowhere else, so it must warn even without -v -- a
+// piped diff that gets truncated silently would leave the user believing it was fully read.
+#[test]
+fn oversized_original_input_is_truncated_and_reported_without_verbose() {
+    let ws = Workspace::new();
+    // The input reaches the model as part of the user message, which the program writes as
+    // "prompt\n\nStdin context:\n<stdin>", so assert on the marker rather than the prefix.
+    let huge = format!("HEAD-MARKER\n{}\nTAIL-MARKER", "y".repeat(200 * 1024));
+    let (out, req) = run(
+        vec![
+            ("400 Bad Request", context_error()),
+            ("200 OK", final_response("done")),
+        ],
+        &["inspect"],
+        &huge,
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let retry = req[1]["messages"][1]["content"].as_str().unwrap();
+    assert!(retry.contains("HEAD-MARKER"));
+    assert!(retry.ends_with("TAIL-MARKER"));
+    assert!(retry.contains("bytes omitted"));
+    assert!(
+        retry.len() < 80 * 1024,
+        "truncated input should keep head+tail only, got {} bytes",
+        retry.len()
+    );
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        log.contains("truncated the original input"),
+        "tier 3 warning must not be gated on --verbose: {log}"
+    );
+    assert_eq!(out.stdout, b"done\n");
+}
+
+// The whole point of reporting buckets is that a user can act on it: system, input and the
+// newest turn are named, so "it failed" becomes "here is what took the room".
+#[test]
+fn exhaustion_report_names_each_irreducible_bucket() {
+    let ws = Workspace::new();
+    let (out, _) = run(
+        vec![
+            ("400 Bad Request", context_error()),
+            ("400 Bad Request", context_error()),
+        ],
+        &["inspect"],
+        "",
+        &ws,
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("cannot shrink further"));
+    assert!(log.contains("system "));
+    assert!(log.contains("original input "));
+    assert!(log.contains("latest turn "));
+    assert!(log.contains("total "));
+    assert!(log.contains("skills "));
+}
+
+// An oversized piped input plus a fat newest turn reproduces the shape the old delete-only
+// recovery could not survive; the ladder must still land a final answer.
+#[test]
+fn oversized_pipe_with_fat_newest_turn_still_finishes() {
+    let ws = Workspace::new();
+    std::fs::write(ws.0.join("fat.txt"), "z".repeat(300 * 1024)).unwrap();
+    let replies = vec![
+        ("200 OK", tools(&[("a", "printf a")])),
+        ("200 OK", tools(&[("b", "printf b")])),
+        ("200 OK", tools(&[("recent", "cat fat.txt")])),
+        // Three context errors walk the whole ladder: compaction, the newest results, the input.
+        // A fourth would find nothing left in the history to shrink, which is the exhaustion
+        // case covered by exhaustion_report_names_each_irreducible_bucket.
+        ("400 Bad Request", context_error()),
+        ("400 Bad Request", context_error()),
+        ("400 Bad Request", context_error()),
+        ("200 OK", final_response("done")),
+    ];
+    let (out, req) = run(
+        replies,
+        &["-v", "--max-steps", "8", "inspect"],
+        &"w".repeat(150 * 1024),
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"done\n");
+    let log = String::from_utf8_lossy(&out.stderr);
+    // Compaction keeps working on the two old turns, then the fat newest turn, and finally the
+    // oversized input -- the exact shape the delete-only recovery used to abandon.
+    assert!(log.contains("compacted old turns"));
+    assert!(log.contains("truncated the newest tool results"));
+    assert!(log.contains("truncated the original input"));
+    // Three tool turns, the three ladder steps, then the final answer -- all inside max_steps = 8.
+    assert_eq!(req.len(), 7);
 }
