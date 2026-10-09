@@ -9,6 +9,9 @@ repository = "https://github.com/lihuu/oneagent"
 readme = "README.md"
 keywords = ["agent", "llm", "cli", "openai", "shell"]
 categories = ["command-line-utilities", "development-tools"]
+# The landing page is for the website, not for the crate that `cargo install`
+# downloads; keep it out of the published tarball.
+exclude = ["site/"]
 
 [[bin]]
 name = "ma"

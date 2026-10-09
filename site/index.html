@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>oneagent — a one-shot AI agent CLI in Rust</title>
+<meta name="description" content="oneagent is a one-shot AI agent CLI: a single Rust binary that drives your existing shell, pipes diffs and logs into any OpenAI-compatible model, and exits. No framework, no daemon, no state.">
+<link rel="canonical" href="https://lihuu.github.io/oneagent/">
+<meta name="theme-color" content="#0d1117">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="oneagent — a one-shot AI agent CLI in Rust">
+<meta property="og:description" content="A single binary that drives your existing shell, pipes diffs and logs into any OpenAI-compatible model, and exits. No framework, no daemon, no state.">
+<meta property="og:url" content="https://lihuu.github.io/oneagent/">
+<meta property="og:image" content="https://lihuu.github.io/oneagent/og.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="oneagent — a one-shot AI agent CLI in Rust">
+<meta name="twitter:description" content="A single binary that drives your existing shell, pipes diffs and logs into any OpenAI-compatible model, and exits.">
+<meta name="twitter:image" content="https://lihuu.github.io/oneagent/og.png">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><text x='16' y='22' font-family='monospace' font-size='15' fill='%2358a6ff' text-anchor='middle'>1a</text></svg>">
+<link rel="stylesheet" href="style.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "oneagent",
+  "alternateName": "ma",
+  "url": "https://lihuu.github.io/oneagent/",
+  "description": "oneagent is a one-shot AI agent CLI: a single Rust binary that drives your existing shell, pipes diffs and logs into any OpenAI-compatible model, and exits.",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "Command-line tool",
+  "operatingSystem": "macOS, Linux",
+  "programmingLanguage": "Rust",
+  "softwareVersion": "0.3.8",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/lihuu/oneagent",
+  "downloadUrl": "https://github.com/lihuu/oneagent/releases/latest",
+  "installUrl": "https://crates.io/crates/oneagent",
+  "sameAs": [
+    "https://github.com/lihuu/oneagent",
+    "https://crates.io/crates/oneagent",
+    "https://docs.rs/oneagent"
+  ]
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <a class="wordmark" href="#top">oneagent <span style="color:var(--dim)">(ma)</span></a>
+  <nav>
+    <a href="#install">Install</a>
+    <a href="#usage" class="hide-sm">Usage</a>
+    <a href="#faq" class="hide-sm">FAQ</a>
+    <a href="https://github.com/lihuu/oneagent">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+  <section class="hero">
+   <div class="hero-inner">
+    <div class="hero-copy">
+      <h1>oneagent <span class="bin">(ma)</span></h1>
+      <p class="tagline">One model. One tool. One loop.</p>
+      <div class="lede">
+        <p><strong>oneagent is a one-shot AI agent CLI</strong> that runs as a single Rust binary. It takes a task on the command line, calls any OpenAI-compatible Chat Completions model, does the work with the shell tools already on your machine, prints one answer and exits. macOS and Linux are supported.</p>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary copy" data-copy="cargo install oneagent">cargo install oneagent</button>
+        <a class="btn" href="https://github.com/lihuu/oneagent/releases/latest">Download binary</a>
+        <a class="btn" href="https://github.com/lihuu/oneagent">Source</a>
+      </div>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="term-title">~/your-project</span>
+      </div>
+      <pre class="term-body"><span class="term-line"><span class="p">$</span> <span class="c">git diff | ma</span> <span class="s">'summarize these changes'</span></span><span class="term-line"><span class="o">  reading 3 files from the diff on stdin</span></span><span class="term-line"><span class="o">  $ git diff --stat</span></span><span class="term-line"><span class="o">  src/main.rs | 18 ++++++++++---------</span></span><span class="term-line"><span class="ok">The change replaces the retry counter with a ladder of three
+recovery tiers, each one costing more information than the last.</span></span><span class="term-line"><span class="p">$</span> <span class="caret"></span></span></pre>
+    </div>
+   </div>
+  </section>
+
+  <section id="what">
+    <div class="wrap reveal">
+      <p class="eyebrow">What it is</p>
+      <h2>A model, available as one more command in your pipeline.</h2>
+      <p class="lead">oneagent is a one-shot command-line agent for people who already live in a shell. Instead of a session you attach to, you run it like any other Unix command: <code>ma 'explain this project'</code>. The task comes from its arguments, and extra context can come from stdin (<code>git diff | ma 'summarize these changes'</code>). Both are sent to an OpenAI-compatible Chat Completions endpoint, and the model then runs shell commands with whatever host CLIs are already installed — <code>git</code>, <code>cargo</code>, <code>grep</code>, <code>curl</code>. oneagent takes the directory you started it in as its workspace, writes the final answer to stdout and the process log to stderr, so it composes with the rest of your pipeline. Common write operations and shell network commands are refused by default; <code>--write</code> and <code>--net</code> opt in, and <code>--skills</code> loads named <code>SKILL.md</code> directories into the prompt. No conversation state is kept between runs.</p>
+      <p>The agent itself is one binary with no runtime dependency on Rust and no daemon to start. It is not a replacement for a resident coding agent such as Claude Code or aider; it is what you reach for when you want a model available as a single command inside an existing script, a <code>Makefile</code>, or a CI step.</p>
+    </div>
+  </section>
+
+  <section id="vs">
+    <div class="wrap reveal">
+      <p class="eyebrow">How it differs</p>
+      <h2>Not a session. A command.</h2>
+      <p>Resident coding agents sit in your terminal and hold a conversation. oneagent runs once. That single difference decides which one belongs in a pipeline.</p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th scope="col">&nbsp;</th><th scope="col" class="col-us">oneagent</th><th scope="col">Resident coding agents (Claude Code, aider)</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Lifecycle</th><td class="us">runs one task, then exits</td><td class="them">a session you stay attached to</td></tr>
+            <tr><th scope="row">Interface</th><td class="us">a Unix command; reads stdin, writes stdout</td><td class="them">an interactive terminal UI</td></tr>
+            <tr><th scope="row">Tools</th><td class="us">the shell and CLIs already on your machine</td><td class="them">a built-in tool suite: edit, search, browse</td></tr>
+            <tr><th scope="row">State</th><td class="us">none carried between runs</td><td class="them">session history, checkpoints, permission prompts</td></tr>
+            <tr><th scope="row">Distribution</th><td class="us">one native binary, no language runtime</td><td class="them">usually needs a Node.js or Python runtime first</td></tr>
+            <tr><th scope="row">Inside a script or CI</th><td class="us"><code>git diff | ma 'review this'</code></td><td class="them">awkward, with no stable non-interactive contract</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap reveal">
+      <p class="eyebrow">Install</p>
+      <h2>One binary. Pick whichever path you already have.</h2>
+
+      <div class="cols">
+        <div class="col">
+          <h3>Prebuilt binary</h3>
+          <p>No Rust toolchain needed. Download the artifact for your platform, unpack it, done.</p>
+          <div class="kbd-row">
+            <pre class="code">tar -xzf ma-0.3.8-aarch64-apple-darwin.tar.gz
+mv ma-0.3.8-aarch64-apple-darwin/ma ~/.local/bin/</pre>
+            <button class="copy" data-copy="tar -xzf ma-&lt;version&gt;-aarch64-apple-darwin.tar.gz
+mv ma-&lt;version&gt;-aarch64-apple-darwin/ma ~/.local/bin/">copy</button>
+          </div>
+          <p style="margin-top:.9rem">Builds exist for macOS (Apple Silicon, Big Sur 11.0+) and Linux (x86_64, glibc 2.34+ — Ubuntu 22.04, Debian 12).</p>
+          <p><a href="https://github.com/lihuu/oneagent/releases/latest">All releases →</a></p>
+        </div>
+
+        <div class="col">
+          <h3>From crates.io</h3>
+          <p>If you already have a Rust toolchain, this compiles it locally and puts the binary in <code>~/.cargo/bin</code>.</p>
+          <div class="kbd-row">
+            <pre class="code">cargo install oneagent</pre>
+            <button class="copy" data-copy="cargo install oneagent">copy</button>
+          </div>
+          <p style="margin-top:.9rem"><a href="https://crates.io/crates/oneagent">crates.io/crates/oneagent →</a></p>
+        </div>
+      </div>
+
+      <h3>Then configure a model</h3>
+      <p>Any endpoint that speaks the OpenAI-compatible Chat Completions API and supports tool calling will do — hosted or local.</p>
+      <pre class="code">export BASE_URL='https://your-endpoint.example/v1'
+export MODEL='your-model'
+export API_KEY='your-key'</pre>
+      <p style="margin-top:.9rem"><code>BASE_URL</code> is the API root; <code>/chat/completions</code> is appended. Settings can also live in a config file.</p>
+    </div>
+  </section>
+
+  <section id="usage">
+    <div class="wrap reveal">
+      <p class="eyebrow">Usage</p>
+      <h2>Point it at a directory and ask.</h2>
+      <p>oneagent uses the directory you started it in as its workspace. <code>-v</code> shows model text and command execution live; the final answer goes to stdout and the process log to stderr.</p>
+
+      <pre class="code">cd /path/to/your/project
+ma -v 'explain the structure of this project'
+
+<span class="cmt"># Take supplementary context from stdin — it never lands on disk</span>
+git diff | ma 'summarize these changes'
+
+<span class="cmt"># Allow writes inside the current directory and its descendants</span>
+ma -v --write 'fix the config file'
+
+<span class="cmt"># Also allow the shell to use the network</span>
+ma -v --write --net 'upgrade the project dependencies'
+
+<span class="cmt"># Load skills by name</span>
+ma --skills code-review,explain 'review and explain these changes'</pre>
+
+      <h3>Writes and network are opt-in</h3>
+      <p>By default common write operations and shell network commands are refused; model API requests are always allowed. The built-in Guard is a best-effort command check, <strong>not a security sandbox</strong> — use a container or virtual machine when you need real isolation.</p>
+
+      <h3>When the context gets too long</h3>
+      <p>Piped input exists only in the conversation and never lands on disk. When the context overflows, the program recovers in order of increasing cost: compact old turns first, then truncate the newest results, and only then truncate the original input. That last step always warns on stderr, because the omitted part can never be read back.</p>
+
+      <p style="margin-top:1.6rem"><a href="https://github.com/lihuu/oneagent/blob/main/docs/usage.en.md">Full usage reference →</a></p>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap reveal">
+      <p class="eyebrow">FAQ</p>
+      <h2>Questions people actually ask.</h2>
+      <div class="faq">
+        <h3>Do I need Rust installed to run <code>ma</code>?</h3>
+        <p>No. Releases ships prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64): unpack one and run it. Rust 1.85+ and a C compiler are needed only to build from source.</p>
+
+        <h3>Which models does it work with?</h3>
+        <p>Any endpoint that speaks the OpenAI-compatible Chat Completions API and supports tool calling — a hosted API or a local server. Set <code>BASE_URL</code>, <code>MODEL</code> and <code>API_KEY</code>, either as environment variables or in the config file.</p>
+
+        <h3>Can I pipe a file or a diff into it?</h3>
+        <p>Yes. Anything on stdin is added to the conversation, and piped input exists only in the conversation — it never lands on disk. <code>git diff | ma 'summarize these changes'</code> is the typical use.</p>
+
+        <h3>Does it work on Windows?</h3>
+        <p>macOS (Apple Silicon) and Linux (x86_64) today. The macOS artifact needs Big Sur (11.0) or later; the Linux artifact needs glibc 2.34+ and does not run on musl distributions such as Alpine.</p>
+
+        <h3>Is it safe to let it run shell commands?</h3>
+        <p>Writes and network access are refused by default and must be enabled per run with <code>--write</code> and <code>--net</code>; model API requests are always allowed. The built-in Guard is a best-effort command check, not a security sandbox — use a container or virtual machine when you need real isolation.</p>
+
+        <h3>Does it keep any state between runs?</h3>
+        <p>No conversation state. Besides its config file, oneagent writes one timestamp so the once-a-day update notice fires at most once; <code>--no-update-check</code> disables that check.</p>
+
+        <h3>How is this different from mini-agent?</h3>
+        <p>Same project. It was renamed from <code>mini-agent</code> to <code>oneagent</code> ahead of its first crates.io release, because the old name was already taken there by an unrelated AI agent framework. The command is still <code>ma</code>, and the old GitHub URL redirects.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap reveal">
+      <h2>Put a model behind one command.</h2>
+      <p class="lead">MIT licensed. One binary, no daemon, no framework.</p>
+      <div class="actions">
+        <button class="btn primary copy" data-copy="cargo install oneagent">cargo install oneagent</button>
+        <a class="btn" href="https://github.com/lihuu/oneagent">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <span>oneagent <span class="mono">(ma)</span> — MIT licensed</span>
+  <span>
+    <a href="https://github.com/lihuu/oneagent">GitHub</a> ·
+    <a href="https://crates.io/crates/oneagent">crates.io</a> ·
+    <a href="https://docs.rs/oneagent">docs.rs</a> ·
+    <a href="https://github.com/lihuu/oneagent/blob/main/docs/usage.en.md">Docs</a>
+  </span>
+</footer>
+
+<script>
+// Progressive enhancement only — every word above is in the HTML already.
+document.documentElement.classList.add('js');
+
+// Copy buttons
+document.querySelectorAll('.copy').forEach(function (el) {
+  el.addEventListener('click', function () {
+    var text = el.dataset.copy;
+    var done = function () {
+      var was = el.textContent;
+      el.textContent = 'copied';
+      el.classList.add('done');
+      setTimeout(function () { el.textContent = was; el.classList.remove('done'); }, 1400);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  });
+});
+
+// Scroll reveal — with a failsafe. The sections start hidden, so anything that
+// stops the observer from firing must not leave the page unreadable: whatever
+// has not been revealed by then is shown outright.
+var reveals = document.querySelectorAll('.reveal');
+function revealAll() {
+  reveals.forEach(function (el) { el.classList.add('in'); });
+}
+if ('IntersectionObserver' in window) {
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { rootMargin: '0px 0px -12% 0px', threshold: 0.05 });
+  reveals.forEach(function (el) { io.observe(el); });
+  setTimeout(revealAll, 1500);
+} else {
+  revealAll();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# oneagent landing page — everything here is public documentation.
+
+User-agent: *
+Allow: /
+
+# AI search crawlers are explicitly welcome. This page exists to be read,
+# quoted and cited; keep it that way.
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://lihuu.github.io/oneagent/sitemap.xml

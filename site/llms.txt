@@ -1,0 +1,34 @@
+# oneagent
+
+> oneagent is a one-shot AI agent CLI. It is a single Rust binary that takes a
+> task on the command line, calls an OpenAI-compatible Chat Completions model,
+> does the work with the shell tools already on the machine, prints one answer
+> and exits. The installed command is `ma`. macOS and Linux.
+
+## Key facts
+
+- Language: Rust (edition 2024, rust 1.85+)
+- Binary: `ma`, one native executable, no language runtime required at run time
+- Platforms: macOS (Apple Silicon, Big Sur 11.0+) and Linux (x86_64, glibc 2.34+)
+- Model backend: any OpenAI-compatible Chat Completions endpoint with tool calling
+- License: MIT
+- Differentiation: one-shot, not a resident session. No daemon, no state between
+  runs. Composes with stdin/stdout, so it drops into a shell pipeline, Makefile
+  or CI step. Contrast with resident coding agents (Claude Code, aider), which
+  hold an interactive session and ship their own tool suite.
+
+## Pages
+
+- [Landing page](https://lihuu.github.io/oneagent/): what it is, install, usage, FAQ
+- [Source](https://github.com/lihuu/oneagent): repository and releases
+- [README](https://github.com/lihuu/oneagent/blob/main/README.md): installation and quick start
+- [Usage reference](https://github.com/lihuu/oneagent/blob/main/docs/usage.en.md): full options, config file, output contract
+- [Security](https://github.com/lihuu/oneagent/blob/main/SECURITY.en.md): the write/network guard model
+- [crates.io](https://crates.io/crates/oneagent): the published package
+- [docs.rs](https://docs.rs/oneagent): generated API documentation
+
+## Notes
+
+- Named `oneagent` on crates.io and GitHub; the command is `ma`. The project was
+  renamed from `mini-agent`, and the old repository URL redirects.
+- `llms.txt` first published 2026-10-09.
