@@ -1,10 +1,35 @@
-# Minimal Agent
+# mini-agent (ma)
 
 **One model. One tool. One loop.**
 
 [中文](README.zh.md) · [English](README.md)
 
-`ma` is a one-shot command-line agent: it takes a task, calls a model, does the work with the shell tools already on the host, prints an answer and exits. macOS and Linux are supported; at runtime it is a single binary.
+[![Release](https://img.shields.io/github/v/release/lihuu/mini-agent?sort=semver&label=release)](https://github.com/lihuu/mini-agent/releases)
+[![Build](https://github.com/lihuu/mini-agent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/mini-agent/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](README.md#installation)
+
+`ma` is a one-shot AI agent that runs as a single binary. It takes a task on the command line, calls an OpenAI-compatible Chat Completions model, does the work with the shell tools already on your machine, prints one answer and exits. macOS and Linux are supported.
+
+## What is ma?
+
+`ma` is a one-shot command-line agent for people who already live in a shell. Instead of a session you attach to, you run it like any other Unix command: `ma 'explain this project'`. The task comes from its arguments, and extra context can come from stdin (`git diff | ma 'summarize these changes'`). Both are sent to an OpenAI-compatible Chat Completions endpoint, and the model then runs shell commands with whatever host CLIs are already installed — `git`, `cargo`, `grep`, `curl`. `ma` takes the directory you started it in as its workspace, writes the final answer to stdout and the process log to stderr, so it composes with the rest of your pipeline. Common write operations and shell network commands are refused by default; `--write` and `--net` opt in, and `--skills` loads named `SKILL.md` directories into the prompt. No conversation state is kept between runs.
+
+The agent itself is one binary with no runtime dependency on Rust and no daemon to start. It is not a replacement for a resident coding agent such as Claude Code or aider; it is what you reach for when you want a model available as a single command inside an existing script, a `Makefile`, or a CI step.
+
+## How is ma different from a resident coding agent?
+
+| | `ma` | Resident coding agents (Claude Code, aider) |
+| --- | --- | --- |
+| Lifecycle | runs one task, then exits | a session you stay attached to |
+| Interface | a Unix command; reads stdin, writes stdout | an interactive terminal UI |
+| Tools | the shell and CLIs already on your machine | a built-in tool suite: edit, search, browse |
+| State | none carried between runs | session history, checkpoints, permission prompts |
+| Distribution | one native binary, no language runtime | usually needs a Node.js or Python runtime first |
+| Inside a script or CI | `git diff \| ma 'review this'` | awkward, with no stable non-interactive contract |
+
+Use a resident agent when you want something to sit in your terminal for an afternoon and refactor a repository. Use `ma` when you want a model as one more command in a pipeline.
 
 ## Installation
 
@@ -84,6 +109,32 @@ By default common write operations and shell network commands are refused; model
 Full options, config file and output contract are in [Usage](docs/usage.en.md), or run `ma --help`. Releasing and platform support are in [Releasing](docs/releasing.en.md).
 
 `--skills` looks for `SKILL.md` by directory name, first under `.agents/skills/` in the current project and then under `~/.agents/skills/`; the project wins, and anything missing or unreadable is skipped. Without the flag no skill is loaded. The full instructions of the selected skills are added to the prompt and referenced files are read on demand; custom directory arguments are not supported yet. See [skills in Usage](docs/usage.en.md#skills).
+
+## Frequently asked questions
+
+### Do I need Rust installed to run `ma`?
+
+No. [Releases](https://github.com/lihuu/mini-agent/releases) ships prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64): unpack one and run it. Rust 1.85+ and a C compiler are needed only to build from source.
+
+### Which models does it work with?
+
+Any endpoint that speaks the OpenAI-compatible Chat Completions API and supports tool calling — a hosted API or a local server. Set `BASE_URL`, `MODEL` and `API_KEY`, either as environment variables or in the config file. See [Usage](docs/usage.en.md#configuration-and-input).
+
+### Can I pipe a file or a diff into it?
+
+Yes. Anything on stdin is added to the conversation, and piped input exists only in the conversation — it never lands on disk. `git diff | ma 'summarize these changes'` is the typical use.
+
+### Does it work on Windows?
+
+macOS (Apple Silicon) and Linux (x86_64) today. The macOS artifact needs Big Sur (11.0) or later; the Linux artifact needs glibc 2.34+ and does not run on musl distributions such as Alpine.
+
+### Is it safe to let it run shell commands?
+
+Writes and network access are refused by default and must be enabled per run with `--write` and `--net`; model API requests are always allowed. The built-in Guard is a best-effort command check, **not a security sandbox** — use a container or virtual machine when you need real isolation. See [Security](SECURITY.en.md).
+
+### Does it keep any state between runs?
+
+No conversation state. Besides its config file, `ma` writes one timestamp so the once-a-day update notice fires at most once; `--no-update-check` disables that check. See [Usage](docs/usage.en.md).
 
 ## License
 

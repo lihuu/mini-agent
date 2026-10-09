@@ -1,10 +1,35 @@
-# Minimal Agent
+# mini-agent（ma）
 
 **One model. One tool. One loop.**
 
 [中文](README.zh.md) · [English](README.md)
 
-`ma` 是一个一次性运行的命令行 Agent：接收任务，调用模型，使用宿主已有的 shell 工具完成工作，输出回答后退出。支持 macOS / Linux，运行时只需要一个二进制文件。
+[![Release](https://img.shields.io/github/v/release/lihuu/mini-agent?sort=semver&label=release)](https://github.com/lihuu/mini-agent/releases)
+[![Build](https://github.com/lihuu/mini-agent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/mini-agent/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#安装)
+
+`ma` 是一个一次性运行的 AI Agent，以单个二进制的形式运行：在命令行接收任务，调用 OpenAI-compatible Chat Completions 模型，使用机器上已有的 shell 工具完成工作，输出一个回答后退出。支持 macOS / Linux。
+
+## ma 是什么？
+
+`ma` 是给本来就生活在 shell 里的人用的一次性命令行 Agent。它不是让你挂在上面的一个会话，而是一条普通的 Unix 命令：`ma '解释这个项目'`。任务从参数里取，额外上下文可以从 stdin 补（`git diff | ma '总结这些修改'`），两者一起发给 OpenAI-compatible Chat Completions 端点，模型再用机器上已经装好的宿主 CLI 干活——`git`、`cargo`、`grep`、`curl`。`ma` 以启动时所在的目录为工作目录，最终回答写 stdout、过程日志写 stderr，所以它能嵌进你现有的管道。常见写操作和 shell 网络命令默认拒绝，要用 `--write` 和 `--net` 显式打开；`--skills` 会把指定的 `SKILL.md` 目录加载进提示词。两次运行之间不保留对话状态。
+
+Agent 本身只有一个二进制：运行时不依赖 Rust，没有要启动的守护进程。它不打算取代 Claude Code、aider 这类驻留式 coding agent；当你想把模型当成脚本、`Makefile` 或 CI 步骤里的又一条命令时，用它。
+
+## 它和驻留式 coding agent 有什么不同？
+
+| | `ma` | 驻留式 coding agent（Claude Code、aider） |
+| --- | --- | --- |
+| 生命周期 | 跑完一个任务就退出 | 一个你需要挂在上面的会话 |
+| 交互方式 | 一条 Unix 命令；读 stdin、写 stdout | 交互式终端界面 |
+| 工具 | 你机器上已有的 shell 和 CLI | 内置工具集：编辑、搜索、浏览 |
+| 状态 | 两次运行之间不保留 | 会话历史、检查点、权限询问 |
+| 分发 | 单个原生二进制，无语言运行时 | 通常要先有 Node.js 或 Python 运行时 |
+| 放进脚本或 CI | `git diff \| ma '评审这些改动'` | 别扭，没有稳定的非交互约定 |
+
+想让它在你终端里坐一下午、重构一个仓库，用驻留式 agent。想在一个管道里多一条能调用模型的命令，用 `ma`。
 
 ## 安装
 
@@ -84,6 +109,32 @@ ma --skills code-review,explain '评审并解释这些修改'
 完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。发版与平台支持范围见[发版流程](docs/releasing.md)。
 
 `--skills` 按目录名从当前项目的 `.agents/skills/`、然后 `~/.agents/skills/` 查找 `SKILL.md`；项目优先，找不到或无法读取的跳过。不传此参数就不加载任何 skill。指定 skills 的完整指令会加入提示词，引用文件按需读取；自定义目录参数尚未支持。详见[skills 使用说明](docs/usage.md#skills)。
+
+## 常见问题
+
+### 运行 `ma` 需要先装 Rust 吗？
+
+不需要。[Releases](https://github.com/lihuu/mini-agent/releases) 提供 macOS（Apple Silicon）和 Linux（x86_64）的预编译二进制，解压即可运行。只有从源码构建才需要 Rust 1.85+ 和 C 编译器。
+
+### 支持哪些模型？
+
+任何说 OpenAI-compatible Chat Completions API 且支持工具调用的端点都可以——托管 API 或本地服务器都行。设置 `BASE_URL`、`MODEL`、`API_KEY`，可以用环境变量，也可以写进配置文件。详见[使用说明](docs/usage.md#配置与输入)。
+
+### 可以把文件或 diff 用管道喂进去吗？
+
+可以。stdin 上的内容会加入对话，而且管道输入只存在于对话里，不落盘。典型用法是 `git diff | ma '总结这些修改'`。
+
+### 支持 Windows 吗？
+
+目前支持 macOS（Apple Silicon）和 Linux（x86_64）。macOS 产物要求 Big Sur（11.0）及以上；Linux 产物要求 glibc 2.34+，不支持 Alpine 等 musl 发行版。
+
+### 让它执行 shell 命令安全吗？
+
+默认拒绝写操作和 shell 网络命令，需要每次运行用 `--write` 和 `--net` 显式打开；模型 API 请求始终允许。内置 Guard 是尽力而为的命令检查，**不是安全沙箱**——需要强隔离时使用容器或虚拟机。详见[安全说明](SECURITY.md)。
+
+### 两次运行之间会保留状态吗？
+
+不保留对话状态。除配置文件外，`ma` 只写一个时间戳，让每日一次的更新提示最多触发一次；`--no-update-check` 可关掉这个检查。详见[使用说明](docs/usage.md)。
 
 ## License
 
