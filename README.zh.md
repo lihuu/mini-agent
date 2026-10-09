@@ -9,6 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#安装)
+[![Website](https://img.shields.io/badge/website-lihuu.github.io%2Foneagent-blue)](https://lihuu.github.io/oneagent/)
 
 `ma` 是一个一次性运行的 AI Agent，以单个二进制的形式运行：在命令行接收任务，调用 OpenAI-compatible Chat Completions 模型，使用机器上已有的 shell 工具完成工作，输出一个回答后退出。支持 macOS / Linux。
 

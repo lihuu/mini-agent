@@ -9,6 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](README.md#installation)
+[![Website](https://img.shields.io/badge/website-lihuu.github.io%2Foneagent-blue)](https://lihuu.github.io/oneagent/)
 
 `ma` is a one-shot AI agent that runs as a single binary. It takes a task on the command line, calls an OpenAI-compatible Chat Completions model, does the work with the shell tools already on your machine, prints one answer and exits. macOS and Linux are supported.
 
