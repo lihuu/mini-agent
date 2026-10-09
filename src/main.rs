@@ -2091,7 +2091,7 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
     Err((3, "max_steps reached".into()))
 }
 
-const RELEASES_API: &str = "https://api.github.com/repos/lihuu/mini-agent/releases/latest";
+const RELEASES_API: &str = "https://api.github.com/repos/lihuu/oneagent/releases/latest";
 const UPDATE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 
 // What the published build for this platform needs in order to run. Derived from measurements
@@ -2176,7 +2176,7 @@ fn tag_name(body: &Value) -> Result<String, String> {
 
 // Bound every download before it is buffered: release assets and the API body alike.
 fn fetch(client: &ureq::Agent, url: &str, accept_json: bool) -> Result<Vec<u8>, String> {
-    let mut request = client.get(url).header("User-Agent", "mini-agent");
+    let mut request = client.get(url).header("User-Agent", "oneagent");
     if accept_json {
         request = request.header("Accept", "application/vnd.github+json");
     }
@@ -2350,7 +2350,7 @@ fn install_update(api_base: &str, exe: &Path) -> Result<(String, String), String
 
 fn release_url(version: &str, target: &str) -> String {
     format!(
-        "https://github.com/lihuu/mini-agent/releases/download/v{version}/ma-{version}-{target}.tar.gz"
+        "https://github.com/lihuu/oneagent/releases/download/v{version}/ma-{version}-{target}.tar.gz"
     )
 }
 

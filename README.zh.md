@@ -1,11 +1,11 @@
-# mini-agent（ma）
+# oneagent（ma）
 
 **One model. One tool. One loop.**
 
 [中文](README.zh.md) · [English](README.md)
 
-[![Release](https://img.shields.io/github/v/release/lihuu/mini-agent?sort=semver&label=release)](https://github.com/lihuu/mini-agent/releases)
-[![Build](https://github.com/lihuu/mini-agent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/mini-agent/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/lihuu/oneagent?sort=semver&label=release)](https://github.com/lihuu/oneagent/releases)
+[![Build](https://github.com/lihuu/oneagent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/oneagent/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#安装)
@@ -33,7 +33,7 @@ Agent 本身只有一个二进制：运行时不依赖 Rust，没有要启动的
 
 ## 安装
 
-预编译二进制在 [Releases](https://github.com/lihuu/mini-agent/releases) 页面，下载对应平台后解压即可，无需 Rust：
+预编译二进制在 [Releases](https://github.com/lihuu/oneagent/releases) 页面，下载对应平台后解压即可，无需 Rust：
 
 | 平台 | 产物 |
 | --- | --- |
@@ -48,11 +48,20 @@ mv ma-<版本>-aarch64-apple-darwin/ma ~/.local/bin/
 ma --help
 ```
 
+如果本机已有 Rust 工具链，同一个包也发布在 crates.io 上：
+
+```sh
+cargo install oneagent
+ma --help
+```
+
+这种方式会把二进制装到 `~/.cargo/bin`；下面的安装脚本改用 `~/.local/bin`，它在 `PATH` 上通常更靠前。
+
 从源码安装需要 Rust 1.85+ 和 C 编译器：
 
 ```sh
-git clone https://github.com/lihuu/mini-agent.git
-cd mini-agent
+git clone https://github.com/lihuu/oneagent.git
+cd oneagent
 ./scripts/install.sh
 ma --help
 ```
@@ -114,7 +123,7 @@ ma --skills code-review,explain '评审并解释这些修改'
 
 ### 运行 `ma` 需要先装 Rust 吗？
 
-不需要。[Releases](https://github.com/lihuu/mini-agent/releases) 提供 macOS（Apple Silicon）和 Linux（x86_64）的预编译二进制，解压即可运行。只有从源码构建才需要 Rust 1.85+ 和 C 编译器。
+不需要。[Releases](https://github.com/lihuu/oneagent/releases) 提供 macOS（Apple Silicon）和 Linux（x86_64）的预编译二进制，解压即可运行。只有从源码构建才需要 Rust 1.85+ 和 C 编译器。
 
 ### 支持哪些模型？
 

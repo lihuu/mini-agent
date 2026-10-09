@@ -9,7 +9,7 @@
 ```sh
 # 1. 改版本号（唯一来源是 Cargo.toml）
 $EDITOR Cargo.toml              # version = "0.3.4"
-cargo build --offline           # 同步 Cargo.lock 里的 mini-agent 版本
+cargo build --offline           # 同步 Cargo.lock 里的 oneagent 版本
 
 # 2. 提交（与功能提交分开，保持历史可读）
 git add Cargo.toml Cargo.lock

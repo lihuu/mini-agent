@@ -93,8 +93,9 @@ stale="$cargo_home/bin/ma"
 installed_dir=$(unset CDPATH; cd -- "$root" && pwd)
 stale_dir=$(unset CDPATH; cd -- "$cargo_home" && pwd)
 if [ "$installed_dir" != "$stale_dir" ] && [ -e "$stale" ]; then
-    if "$cargo_bin" install --list 2>/dev/null | grep -q '^mini-agent '; then
-        "$cargo_bin" uninstall mini-agent >/dev/null 2>&1 || true
+    if "$cargo_bin" install --list 2>/dev/null | grep -qE '^(oneagent|mini-agent) '; then
+        "$cargo_bin" uninstall oneagent >/dev/null 2>&1 \
+            || "$cargo_bin" uninstall mini-agent >/dev/null 2>&1 || true
         echo "removed the older copy at $stale"
     else
         echo "note: $stale exists but is not cargo-managed; left untouched" >&2

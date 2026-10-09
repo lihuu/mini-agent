@@ -1,11 +1,11 @@
-# mini-agent (ma)
+# oneagent (ma)
 
 **One model. One tool. One loop.**
 
 [中文](README.zh.md) · [English](README.md)
 
-[![Release](https://img.shields.io/github/v/release/lihuu/mini-agent?sort=semver&label=release)](https://github.com/lihuu/mini-agent/releases)
-[![Build](https://github.com/lihuu/mini-agent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/mini-agent/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/lihuu/oneagent?sort=semver&label=release)](https://github.com/lihuu/oneagent/releases)
+[![Build](https://github.com/lihuu/oneagent/actions/workflows/release.yml/badge.svg)](https://github.com/lihuu/oneagent/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](README.md#installation)
@@ -33,7 +33,7 @@ Use a resident agent when you want something to sit in your terminal for an afte
 
 ## Installation
 
-Prebuilt binaries are on the [Releases](https://github.com/lihuu/mini-agent/releases) page. Download the one for your platform and unpack it; no Rust toolchain required:
+Prebuilt binaries are on the [Releases](https://github.com/lihuu/oneagent/releases) page. Download the one for your platform and unpack it; no Rust toolchain required:
 
 | Platform | Artifact |
 | --- | --- |
@@ -48,11 +48,20 @@ mv ma-<version>-aarch64-apple-darwin/ma ~/.local/bin/
 ma --help
 ```
 
+If you already have a Rust toolchain, the same package is on crates.io:
+
+```sh
+cargo install oneagent
+ma --help
+```
+
+That places the binary in `~/.cargo/bin`; the install script below uses `~/.local/bin`, which usually comes first on `PATH`.
+
 Building from source needs Rust 1.85+ and a C compiler:
 
 ```sh
-git clone https://github.com/lihuu/mini-agent.git
-cd mini-agent
+git clone https://github.com/lihuu/oneagent.git
+cd oneagent
 ./scripts/install.sh
 ma --help
 ```
@@ -114,7 +123,7 @@ Full options, config file and output contract are in [Usage](docs/usage.en.md), 
 
 ### Do I need Rust installed to run `ma`?
 
-No. [Releases](https://github.com/lihuu/mini-agent/releases) ships prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64): unpack one and run it. Rust 1.85+ and a C compiler are needed only to build from source.
+No. [Releases](https://github.com/lihuu/oneagent/releases) ships prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64): unpack one and run it. Rust 1.85+ and a C compiler are needed only to build from source.
 
 ### Which models does it work with?
 
@@ -139,3 +148,4 @@ No conversation state. Besides its config file, `ma` writes one timestamp so the
 ## License
 
 [MIT](LICENSE).
+E).

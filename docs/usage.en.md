@@ -17,7 +17,7 @@ The artifact is `target/release/ma`. `./target/release/ma` is a path relative to
 
 ```sh
 cd /path/to/your/project
-/path/to/mini-agent/target/release/ma -v 'analyze this project'
+/path/to/oneagent/target/release/ma -v 'analyze this project'
 ```
 
 Replace both paths in the example with real directories. The working directory comes from where you start the binary, not from where the binary lives.

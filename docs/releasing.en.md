@@ -7,7 +7,7 @@ A release is triggered by a tag; `.github/workflows/release.yml` performs the ve
 ```sh
 # 1. Bump the version (the single source of truth is Cargo.toml)
 $EDITOR Cargo.toml              # version = "0.3.4"
-cargo build --offline           # sync the mini-agent version in Cargo.lock
+cargo build --offline           # sync the oneagent version in Cargo.lock
 
 # 2. Commit (separate from feature commits, to keep the history readable)
 git add Cargo.toml Cargo.lock

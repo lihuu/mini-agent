@@ -145,4 +145,4 @@ fi
 git push origin main
 git push origin "v$next"
 echo "release: pushed v$next; CI is building the binaries"
-echo "  https://github.com/lihuu/mini-agent/actions"
+echo "  https://github.com/lihuu/oneagent/actions"

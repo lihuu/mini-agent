@@ -17,7 +17,7 @@ cargo build --release --locked
 
 ```sh
 cd /path/to/your/project
-/path/to/mini-agent/target/release/ma -v '分析当前项目'
+/path/to/oneagent/target/release/ma -v '分析当前项目'
 ```
 
 将示例中的两个路径替换为实际目录。工作目录取启动位置，与二进制放在哪里无关。
