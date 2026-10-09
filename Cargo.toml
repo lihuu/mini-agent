@@ -15,8 +15,10 @@ name = "ma"
 path = "src/main.rs"
 
 [dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 libc = "0.2"
 serde_json = "1"
+tar = { version = "0.4", default-features = false }
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 [profile.release]

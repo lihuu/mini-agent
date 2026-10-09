@@ -34,6 +34,8 @@ ma --help
 
 运行 `ma` 无需安装 Rust；它使用任务所需的宿主 CLI。
 
+之后用 `ma --update` 升级到最新发布版：它下载本平台产物、先执行一次 `--version` 校验，版本对得上才替换自身，任何一步失败都保留原二进制。普通运行还会每天检查一次新版本，只在 stderr 提示；`--no-update-check` 可关闭。
+
 ## 配置模型
 
 使用支持工具调用的 OpenAI-compatible Chat Completions API，将下面的地址、模型和密钥替换为你的实际配置：

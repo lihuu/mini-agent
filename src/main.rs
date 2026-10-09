@@ -47,6 +47,8 @@ One model. One tool. One loop.\n\n\
   --write             Allow obvious writes within startup cwd and descendants\n\
   --net               Allow shell network commands (model HTTP is always allowed)\n\
   -v, --verbose       Print live model text, shell output and progress to stderr\n\
+  --update            Replace this binary with the latest published release\n\
+  --no-update-check   Skip the once-a-day check for a newer release\n\
   --max-steps N        Maximum model requests (default: 200)\n\
   --http-timeout SEC   Per-request timeout (default: 120; 1..86400)\n\
   --shell-timeout SEC  Per-command timeout (default: 30; 1..86400)\n\
@@ -85,6 +87,7 @@ struct Config {
     http_timeout: Duration,
     shell_timeout: Duration,
     verbose: bool,
+    update_check: bool,
     policy: Policy,
 }
 
@@ -211,6 +214,7 @@ fn parse_config() -> Result<Config, String> {
         http_timeout: Duration::from_secs(120),
         shell_timeout: Duration::from_secs(30),
         verbose: false,
+        update_check: true,
         policy: Policy {
             workspace: std::env::current_dir()
                 .and_then(|p| p.canonicalize())
@@ -233,6 +237,10 @@ fn parse_config() -> Result<Config, String> {
             .map_or((arg.as_str(), None), |(f, v)| (f, Some(v)));
         match flag {
             "--verbose" | "-v" if inline.is_none() => c.verbose = true,
+            "--no-update-check" if inline.is_none() => c.update_check = false,
+            "--update" if inline.is_none() => {
+                return Err("--update cannot be combined with a prompt; run it on its own".into());
+            }
             "--write" | "--net" if inline.is_none() => {
                 if flag == "--write" {
                     c.policy.write = true;
@@ -2083,8 +2091,301 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
     Err((3, "max_steps reached".into()))
 }
 
+const RELEASES_API: &str = "https://api.github.com/repos/lihuu/mini-agent/releases/latest";
+const UPDATE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
+
+// Release assets are named ma-<version>-<target>.tar.gz, so the running binary can be replaced
+// by an asset built for the same platform that shipped it.
+fn release_target() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("aarch64-apple-darwin")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("x86_64-apple-darwin")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("x86_64-unknown-linux-gnu")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some("aarch64-unknown-linux-gnu")
+    } else {
+        None
+    }
+}
+
+// Numeric compare only: a suffix like -rc1 is treated as older than the release, and a tag that
+// does not parse as x.y.z never triggers a downgrade to something we cannot order.
+fn newer_version(remote: &str, local: &str) -> bool {
+    let parse = |value: &str| -> Option<Vec<u64>> {
+        let mut parts = Vec::new();
+        for piece in value.trim().trim_start_matches('v').split('.') {
+            parts.push(piece.parse::<u64>().ok()?);
+        }
+        (!parts.is_empty()).then_some(parts)
+    };
+    match (parse(remote), parse(local)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+fn tag_name(body: &Value) -> Result<String, String> {
+    body["tag_name"]
+        .as_str()
+        .map(|tag| tag.trim_start_matches('v').to_owned())
+        .filter(|tag| !tag.is_empty())
+        .ok_or_else(|| "update check response has no tag_name".to_owned())
+}
+
+// Bound every download before it is buffered: release assets and the API body alike.
+fn fetch(client: &ureq::Agent, url: &str, accept_json: bool) -> Result<Vec<u8>, String> {
+    let mut request = client.get(url).header("User-Agent", "mini-agent");
+    if accept_json {
+        request = request.header("Accept", "application/vnd.github+json");
+    }
+    let mut response = request.call().map_err(|e| format!("update request: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("update request failed: HTTP {}", response.status()));
+    }
+    response
+        .body_mut()
+        .with_config()
+        .limit(UPDATE_DOWNLOAD_LIMIT)
+        .read_to_vec()
+        .map_err(|e| format!("update request: {e}"))
+}
+
+fn parse_json(bytes: &[u8]) -> Result<Value, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("update response JSON: {e}"))
+}
+
+// Extract exactly one member from a tar.gz. Only a plain file is accepted: directories, links,
+// devices and any entry whose name escapes the intended basename are refused, so a crafted
+// archive cannot write somewhere it should not.
+fn extract_member(archive: &[u8], member: &str) -> Result<Vec<u8>, String> {
+    let mut decoder = flate2::read::GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(&mut decoder);
+    let entries = tar.entries().map_err(|e| format!("update archive: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("update archive: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("update archive path: {e}"))?
+            .into_owned();
+        // Reject traversal before normalising: dropping a ParentDir would turn `../ma` into a
+        // harmless-looking `ma`, so the component must be refused while it is still visible.
+        // RootDir and Prefix are absolute paths and are refused for the same reason.
+        if path.components().any(|part| {
+            matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(format!("update archive: {member} escapes the archive"));
+        }
+        // CurDir is harmless and is dropped: entries arrive as `./ma`. What remains is either
+        // `ma` or `<release-dir>/ma`, so one optional leading directory is allowed.
+        let names: Vec<_> = path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => Some(name.to_owned()),
+                _ => None,
+            })
+            .collect();
+        if names.last().and_then(|n| n.to_str()) != Some(member) {
+            continue;
+        }
+        if names.len() > 2 || !entry.header().entry_type().is_file() {
+            return Err(format!(
+                "update archive: {member} is not a plain file at the archive root"
+            ));
+        }
+        let mut bytes = Vec::new();
+        entry
+            .take(member_len_limit())
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("update archive: {e}"))?;
+        if bytes.is_empty() {
+            return Err("update archive: member is empty".into());
+        }
+        return Ok(bytes);
+    }
+    Err(format!("update archive: no {member} inside"))
+}
+
+fn member_len_limit() -> u64 {
+    UPDATE_DOWNLOAD_LIMIT
+}
+
+// The single source of truth for an update is the artifact itself: the downloaded bytes are
+// written beside the running binary, executed with --version, and only a match may replace it.
+// A truncated download, a wrong-architecture build or an HTML error page therefore cannot
+// displace a working ma. `api_base` overrides the GitHub API for tests; empty means production.
+fn install_update(api_base: &str, exe: &Path) -> Result<(String, String), String> {
+    let target = release_target()
+        .ok_or_else(|| "no prebuilt binary is published for this platform".to_owned())?;
+    // GitHub answers an asset download with a 302 to a signed CDN URL, so redirects must be
+    // followed here. Production is pinned to https so a redirect cannot reach plain http; the
+    // test override uses a loopback http server, which https_only would reject.
+    let client = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(300)))
+        .http_status_as_error(false)
+        .max_redirects(5)
+        .https_only(api_base.is_empty())
+        .max_idle_connections(0)
+        .build()
+        .new_agent();
+    let version = if api_base.is_empty() {
+        tag_name(&parse_json(&fetch(&client, RELEASES_API, true)?)?)?
+    } else {
+        let base = api_base.trim_end_matches('/');
+        tag_name(&parse_json(&fetch(&client, base, true)?)?)?
+    };
+    let archive = if api_base.is_empty() {
+        fetch(&client, &release_url(&version, target), false)?
+    } else {
+        let base = api_base.trim_end_matches('/');
+        fetch(
+            &client,
+            &format!("{base}/assets/ma-{version}-{target}.tar.gz"),
+            false,
+        )?
+    };
+    let binary = extract_member(&archive, "ma")?;
+
+    let dir = exe
+        .parent()
+        .ok_or_else(|| format!("cannot update {}: no parent directory", exe.display()))?;
+    let staged = dir.join(format!(".ma-update-{}", std::process::id()));
+    let cleanup = || {
+        let _ = std::fs::remove_file(&staged);
+    };
+    if let Err(e) = std::fs::write(&staged, &binary) {
+        cleanup();
+        return Err(format!("update staging: {e}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)) {
+            cleanup();
+            return Err(format!("update staging: {e}"));
+        }
+    }
+    let observed = match Command::new(&staged).arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+        Ok(_) => String::new(),
+        Err(e) => {
+            cleanup();
+            return Err(format!("update verification: {e}"));
+        }
+    };
+    let expected = format!("ma {version}");
+    if observed != expected {
+        cleanup();
+        return Err(format!(
+            "update verification: extracted binary reported {}, expected {expected}",
+            if observed.is_empty() {
+                "nothing".to_owned()
+            } else {
+                observed
+            }
+        ));
+    }
+
+    // Replace the symlink's target when the binary is reached through one, so a package-manager
+    // style ~/.local/bin/ma -> versions/v0.3.1/ma keeps working. Fall back to the path itself.
+    let destination = exe
+        .canonicalize()
+        .ok()
+        .filter(|resolved| resolved.is_file())
+        .unwrap_or_else(|| exe.to_owned());
+    if let Err(e) = std::fs::rename(&staged, &destination) {
+        cleanup();
+        return Err(format!(
+            "update: cannot replace {}: {e}",
+            destination.display()
+        ));
+    }
+    Ok((version, destination.display().to_string()))
+}
+
+fn release_url(version: &str, target: &str) -> String {
+    format!(
+        "https://github.com/lihuu/mini-agent/releases/download/v{version}/ma-{version}-{target}.tar.gz"
+    )
+}
+
+// A once-a-day check should never delay or fail a real run, so it is best-effort on both counts:
+// any error is silent, and the last check time is recorded before the request is sent.
+fn update_stamp_path() -> Option<PathBuf> {
+    config_path().map(|path| path.with_file_name("last-update-check"))
+}
+
+fn maybe_notify_update(c: &Config) {
+    if !c.update_check {
+        return;
+    }
+    let Some(stamp) = update_stamp_path() else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let recent = std::fs::read_to_string(&stamp)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .is_some_and(|last| now.saturating_sub(last) < 24 * 60 * 60);
+    if recent {
+        return;
+    }
+    if let Some(parent) = stamp.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&stamp, now.to_string());
+    let Ok(version) = update_latest_version() else {
+        return;
+    };
+    if newer_version(&version, env!("CARGO_PKG_VERSION")) {
+        eprintln!(
+            "ma: {version} is available (running {}); run `ma --update`",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+}
+
+fn update_latest_version() -> Result<String, String> {
+    let client = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .max_idle_connections(0)
+        .build()
+        .new_agent();
+    tag_name(&parse_json(&fetch(&client, RELEASES_API, true)?)?)
+}
+
 fn main() -> ExitCode {
     let info = informational_arg();
+    if matches!(info.as_deref(), Some("--update")) {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("ma: cannot locate the running binary: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        return match install_update("", &exe) {
+            Ok((version, path)) => {
+                println!("ma updated to {version} ({path})");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("ma: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     if matches!(info.as_deref(), Some("--help" | "-h")) {
         print!("{HELP}");
         return ExitCode::SUCCESS;
@@ -2113,6 +2414,8 @@ fn main() -> ExitCode {
         eprintln!("ma: signal setup: {e}");
         return ExitCode::from(1);
     }
+    // Notice goes to stderr so a piped stdout stays exactly the final answer.
+    maybe_notify_update(&config);
     match agent_loop(&config) {
         Ok(answer) => {
             let mut stdout = io::stdout().lock();
@@ -2142,7 +2445,7 @@ fn informational_arg() -> Option<String> {
         if arg == "--" {
             break;
         }
-        if matches!(arg.as_str(), "--help" | "-h" | "--version") {
+        if matches!(arg.as_str(), "--help" | "-h" | "--version" | "--update") {
             return Some(arg);
         }
         if matches!(
@@ -2159,4 +2462,227 @@ fn informational_arg() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    // A fake GitHub: /releases/latest answers with a tag, the asset path answers with bytes.
+    fn serve(tag: &str, archive: Vec<u8>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let api = format!("{root}/releases/latest");
+        listener.set_nonblocking(true).unwrap();
+        let tag = tag.to_owned();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while seen.len() < 2 && Instant::now() < deadline {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                seen.push(path.clone());
+                if path.ends_with("/releases/latest") {
+                    let body = format!("{{\"tag_name\":\"v{tag}\"}}");
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                } else {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        archive.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&archive).unwrap();
+                }
+            }
+            seen
+        });
+        (api, handle)
+    }
+
+    // Roll a real tar.gz so extraction runs against actual archive bytes.
+    fn archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (name, bytes) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *bytes).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    // A shell script stands in for the binary: install_update runs the candidate with
+    // --version, so what matters is what the candidate prints, not that it is really ma.
+    fn candidate(version: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho 'ma {version}'\n").into_bytes()
+    }
+
+    fn temp_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ma-update-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn version_comparison_orders_numerically() {
+        assert!(newer_version("0.4.0", "0.3.1"));
+        assert!(newer_version("v0.10.0", "0.9.9")); // not a string compare
+        assert!(!newer_version("0.3.1", "0.3.1"));
+        assert!(!newer_version("0.3.0", "0.3.1"));
+        assert!(!newer_version("garbage", "0.3.1")); // never downgrade on junk
+    }
+
+    #[test]
+    fn extraction_accepts_rooted_and_nested_layouts() {
+        let flat = archive(&[("ma", candidate("1.0.0").as_slice()), ("README.md", b"x")]);
+        assert!(!extract_member(&flat, "ma").unwrap().is_empty());
+        let nested = archive(&[
+            (
+                "ma-0.3.1-aarch64-apple-darwin/ma",
+                candidate("1.0.0").as_slice(),
+            ),
+            ("ma-0.3.1-aarch64-apple-darwin/README.md", b"x"),
+        ]);
+        assert!(!extract_member(&nested, "ma").unwrap().is_empty());
+    }
+
+    // tar::Builder refuses to write a `..` path, which is why these archives are assembled from
+    // raw header bytes: the guard must be tested against the hostile input it exists to stop.
+    fn hostile_archive(name: &str) -> Vec<u8> {
+        let mut header = [0u8; 512];
+        let bytes = name.as_bytes();
+        header[..bytes.len()].copy_from_slice(bytes);
+        header[100..107].copy_from_slice(b"0000755"); // mode
+        header[108..115].copy_from_slice(b"0000000"); // uid
+        header[116..123].copy_from_slice(b"0000000"); // gid
+        header[124..135].copy_from_slice(b"00000000007"); // size 7
+        header[136..147].copy_from_slice(b"00000000000"); // mtime
+        header[156] = b'0'; // regular file
+        header[257..262].copy_from_slice(b"ustar");
+        header[148..156].copy_from_slice(b"        "); // checksum blanked for computation
+        let sum: u32 = header.iter().map(|b| *b as u32).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut payload = vec![0u8; 512];
+        payload[..7].copy_from_slice(b"payload");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&header);
+        raw.extend_from_slice(&payload);
+        raw.extend_from_slice(&[0u8; 1024]); // two zero blocks terminate the archive
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&raw).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn extraction_refuses_escapes_and_deep_paths() {
+        for name in ["../ma", "sub/../ma", "/ma", "a/b/ma"] {
+            let bytes = hostile_archive(name);
+            assert!(
+                extract_member(&bytes, "ma").is_err(),
+                "{name} must not be extracted"
+            );
+        }
+        // A member that is simply absent is an error, not an empty success.
+        assert!(extract_member(&archive(&[("other", b"x")]), "ma").is_err());
+    }
+
+    #[test]
+    fn update_replaces_the_file_when_the_candidate_reports_the_tagged_version() {
+        let dir = temp_dir();
+        let exe = dir.join("ma");
+        std::fs::write(&exe, b"old binary").unwrap();
+        let payload = candidate("9.9.9");
+        let bytes = archive(&[("ma-9.9.9-aarch64-apple-darwin/ma", payload.as_slice())]);
+        let (api, server) = serve("9.9.9", bytes);
+        let (version, path) = install_update(&api, &exe).expect("update should succeed");
+        assert_eq!(version, "9.9.9");
+        assert_eq!(path, exe.display().to_string());
+        let written = std::fs::read(&exe).unwrap();
+        assert_eq!(written, payload);
+        // No staging file may survive a successful update.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".ma-update"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging file left behind");
+        let seen = server.join().unwrap();
+        assert!(seen[0].ends_with("/releases/latest"));
+        assert!(seen[1].contains("ma-9.9.9-aarch64-apple-darwin.tar.gz"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_refuses_to_replace_when_the_candidate_disagrees() {
+        let dir = temp_dir();
+        let exe = dir.join("ma");
+        std::fs::write(&exe, b"old binary").unwrap();
+        // The API says 9.9.9 but the artifact reports something else, which is exactly the
+        // signature of a truncated download or an HTML error page saved to disk.
+        let bytes = archive(&[("ma", candidate("0.0.1").as_slice())]);
+        let (api, server) = serve("9.9.9", bytes);
+        let error = install_update(&api, &exe).expect_err("mismatch must be refused");
+        assert!(error.contains("verification"), "{error}");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old binary");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".ma-update"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging file left behind after failure"
+        );
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_reports_a_missing_asset_without_touching_the_binary() {
+        let dir = temp_dir();
+        let exe = dir.join("ma");
+        std::fs::write(&exe, b"old binary").unwrap();
+        let (api, server) = serve("9.9.9", archive(&[("not-ma", b"x")]));
+        let error = install_update(&api, &exe).expect_err("missing member must fail");
+        assert!(error.contains("no ma inside"), "{error}");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old binary");
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
