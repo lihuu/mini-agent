@@ -1,5 +1,7 @@
 # Minimal Agent V0 设计
 
+[中文](design.md) · [English](design.en.md)
+
 目的：一次性运行的 Rust executable `ma`，供人和程序通过参数、stdin、stdout、stderr 调用。永久坚持 One model. One tool. One loop.
 
 ## 已确认的边界

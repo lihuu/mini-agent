@@ -1,5 +1,7 @@
 # Security Policy
 
+[中文](SECURITY.md) · [English](SECURITY.en.md)
+
 ## `ma` 执行模型生成的 shell 命令
 
 `ma` 会把模型生成的命令交给 `/bin/sh -c` 执行。内置的 Guard 只做**启动时固定的 best-effort 检查**,用于拦截常见误操作:

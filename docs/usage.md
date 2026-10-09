@@ -1,5 +1,7 @@
 # 使用细节
 
+[中文](usage.md) · [English](usage.en.md)
+
 安装与日常用法见 [README](../README.md)。以下示例假定 `ma` 已安装并在 `PATH` 中。
 
 ## 只构建，不安装
@@ -206,4 +208,4 @@ wc -c target/release/ma
 ./scripts/release.sh    # 发版：bump → 验证 → 提交 → tag → 推送
 ```
 
-`release.sh` 的用法与它对工作区的要求见[发版流程](releasing.md#脚本化scriptsrelease.sh)。
+`release.sh` 的用法与它对工作区的要求见[发版流程](releasing.md#脚本化scriptsreleasesh)。

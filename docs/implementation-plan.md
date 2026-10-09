@@ -1,5 +1,7 @@
 # Minimal Agent V0 Implementation Plan
 
+[中文](implementation-plan.md) · [English](implementation-plan.en.md)
+
 **Goal:** 实现已确认设计中的一次性 `ma` executable。
 
 **Architecture:** 单 Rust 源文件，普通函数依次处理参数、模型请求、Guard、shell 和循环。无异步运行时、SDK 或插件抽象。

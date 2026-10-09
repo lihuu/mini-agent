@@ -1,5 +1,7 @@
 # 发版流程
 
+[中文](releasing.md) · [English](releasing.en.md)
+
 发版由 tag 触发，`.github/workflows/release.yml` 自动完成校验、构建和发布。人工只做三件事：改版本号、提交、打 tag 并推送。
 
 ## 步骤

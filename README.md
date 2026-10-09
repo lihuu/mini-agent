@@ -1,5 +1,7 @@
 # Minimal Agent
 
+[中文](README.md) · [English](README.en.md)
+
 **One model. One tool. One loop.**
 
 `ma` 是一个一次性运行的命令行 Agent：接收任务，调用模型，使用宿主已有的 shell 工具完成工作，输出回答后退出。支持 macOS / Linux，运行时只需要一个二进制文件。
