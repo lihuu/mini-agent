@@ -1920,8 +1920,25 @@ fn readonly_question_glob_matches_unicode_names() {
         Some(("LC_ALL", std::ffi::OsStr::new("C.UTF-8"))),
     );
     assert!(out.status.success());
-    assert_eq!(result(&req[1], 3)["stdout"], "unicode\n");
-    assert_eq!(result(&req[1], 3)["exit_code"], 0);
+    // `?` matches one character in bash (macOS /bin/sh) and busybox ash, but one byte
+    // in dash (Debian and Ubuntu /bin/sh), where a UTF-8 name never matches. Ask the
+    // host shell which rule applies; the Guard must not deny the read either way.
+    let shell_glob = Command::new("/bin/sh")
+        .args(["-c", "printf %s ?.rs"])
+        .current_dir(&ws.0)
+        .env("LC_ALL", "C.UTF-8")
+        .output()
+        .unwrap()
+        .stdout;
+    let tool = result(&req[1], 3);
+    if shell_glob == "你.rs".as_bytes() {
+        assert_eq!(tool["stdout"], "unicode\n");
+        assert_eq!(tool["exit_code"], 0);
+    } else {
+        assert_eq!(shell_glob, b"?.rs");
+        assert_eq!(tool["stdout"], "");
+        assert_ne!(tool["exit_code"], 0);
+    }
     let outside = Workspace::new();
     std::fs::write(outside.0.join("secret"), "secret").unwrap();
     std::fs::remove_file(ws.0.join("你.rs")).unwrap();
