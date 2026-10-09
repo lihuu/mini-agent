@@ -55,7 +55,7 @@ cd /path/to/your/project
 | `--http-timeout SEC` | 单次模型请求超时，秒 | `120` |
 | `--shell-timeout SEC` | 单次 shell 命令超时，秒 | `30` |
 | `-h, --help` | 显示帮助 | — |
-| `--version` | 显示版本 | — |
+| `--version` | 显示版本；平台与运行要求打印到 stderr | — |
 | `--` | 将其后的参数全部视为 Prompt | — |
 
 ## 配置与输入

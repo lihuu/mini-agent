@@ -101,6 +101,22 @@ ma --update                 # 已安装的 ma 自我更新到最新发布版
 
 当前不打算降低 glibc 下界（例如改用 `ubuntu-22.04` 构建）。若日后需要支持 Ubuntu 20.04 / Debian 11，把 `build` 矩阵里的 `ubuntu-latest` 换成 `ubuntu-22.04` 即可，产物下界随之下移。
 
+### `--version` 是机器契约，不要加注解
+
+`--version` 的 **stdout 必须恰好是 `ma <版本>` 一行**，不能加括号、后缀或第二行。
+
+原因是升级链路依赖它：`ma --update` 用候选二进制的 `--version` 输出做严格相等校验，而**已发布的旧版本用的是全行比较**。只要这行长大一点点，所有旧版本的 `ma --update` 就会永久拒绝新版本 —— 用户再也升不上来。
+
+平台信息因此走 **stderr**，与项目其它部分一致（stdout 给机器、stderr 给人）：
+
+```
+$ ma --version
+ma 0.3.4                                              ← stdout，机器读
+ma: built for aarch64-apple-darwin, requires macOS 11+  ← stderr，人读
+```
+
+`ma --update` 只读 stdout，所以两不干扰。修改 `--version` 前先看 `version_line_is_exactly_the_bare_form_older_binaries_compare_against` 这个测试，它把这条约束固定住了。
+
 ### 没有产物的平台
 
 `ma --update` 依赖 `release_target()` 的映射，目前只覆盖 macOS（arm64 / x86_64）与 Linux（x86_64 / aarch64）。其他平台会明确报「no prebuilt binary is published for this platform」，而不是下载到错误架构的产物。

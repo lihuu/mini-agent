@@ -2103,14 +2103,19 @@ fn help_and_version_work_after_prompt_but_not_as_values_or_after_separator() {
             "{flag}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(out.stderr.is_empty());
-        assert!(
-            String::from_utf8_lossy(&out.stdout).starts_with(if flag == "--version" {
-                "ma 0."
-            } else {
-                "ma [OPTIONS]"
-            })
-        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if flag == "--version" {
+            // stdout is the machine contract and must stay a bare version: an older binary
+            // compares this exact line to decide whether an update is genuine.
+            assert_eq!(stdout.split_whitespace().count(), 2, "{stdout}");
+            assert!(stdout.starts_with("ma 0."), "{stdout}");
+            // The human-facing platform detail rides on stderr, which the check never reads.
+            assert!(stderr.contains("built for"), "{stderr}");
+        } else {
+            assert!(stdout.starts_with("ma [OPTIONS]"), "{stdout}");
+            assert!(stderr.is_empty(), "{stderr}");
+        }
         let value = cli()
             .args(["--model", flag, "--base-url", "invalid", "prompt"])
             .stdin(Stdio::null())

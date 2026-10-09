@@ -13,7 +13,7 @@
 | macOS (Apple Silicon) | `ma-<版本>-aarch64-apple-darwin.tar.gz` |
 | Linux (x86_64) | `ma-<版本>-x86_64-unknown-linux-gnu.tar.gz` |
 
-macOS 产物要求 Big Sur（11.0）及以上。Linux 产物动态链接 glibc，实测在 glibc 2.34 及以上的发行版可用（Ubuntu 22.04+、Debian 12+），不支持 Alpine 等 musl 发行版。完整实测矩阵见[发版流程](docs/releasing.md#平台支持范围实测)。
+macOS 产物要求 Big Sur（11.0）及以上。Linux 产物动态链接 glibc，实测在 glibc 2.34 及以上的发行版可用（Ubuntu 22.04+、Debian 12+），不支持 Alpine 等 musl 发行版。装好后 `ma --version` 会把这台机器对应的产物与运行要求一并打印出来。完整实测矩阵见[发版流程](docs/releasing.md#平台支持范围实测)。
 
 ```sh
 tar -xzf ma-<版本>-aarch64-apple-darwin.tar.gz

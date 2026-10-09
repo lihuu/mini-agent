@@ -54,7 +54,7 @@ One model. One tool. One loop.\n\n\
   --shell-timeout SEC  Per-command timeout (default: 30; 1..86400)\n\
   --                  Treat remaining arguments as prompt\n\
   -h, --help          Show help\n\
-  --version           Show version\n\n\
+  --version           Show version and the platform this build targets\n\n\
 Environment: BASE_URL, MODEL, API_KEY.\n\
 Config: ~/.config/ma/config.json or MA_CONFIG; command line wins over both.\n\
 Default base URL: https://api.openai.com/v1. Model and key are required.\n\
@@ -2094,6 +2094,22 @@ fn agent_loop(c: &Config) -> Result<String, (u8, String)> {
 const RELEASES_API: &str = "https://api.github.com/repos/lihuu/mini-agent/releases/latest";
 const UPDATE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 
+// What the published build for this platform needs in order to run. Derived from measurements
+// of the released artifact, not from the build host: ld.so tolerates the weak GLIBC_2.39
+// symbols, so the Linux floor is the strongest symbol the build actually requires. Stated in
+// the version output so a user can tell whether a download will run before installing it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const PLATFORM_REQUIRES: &str = "glibc>=2.34";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLATFORM_REQUIRES: &str = "macOS 11+";
+
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+const PLATFORM_REQUIRES: &str = "unknown";
+
 // Release assets are named ma-<version>-<target>.tar.gz, so the running binary can be replaced
 // by an asset built for the same platform that shipped it.
 fn release_target() -> Option<&'static str> {
@@ -2107,6 +2123,30 @@ fn release_target() -> Option<&'static str> {
         Some("aarch64-unknown-linux-gnu")
     } else {
         None
+    }
+}
+
+// stdout is the machine contract, stderr is for people -- the same split the rest of the tool
+// follows. `--version` must keep printing a bare `ma X.Y.Z` on stdout, because a binary built
+// before this change compares the whole line for equality and would refuse to install a
+// release whose version line grew a note. The platform goes to stderr instead, where it is
+// visible to a person and irrelevant to the update check.
+fn reported_version(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("ma ")?;
+    let version = rest.split_whitespace().next()?;
+    (!version.is_empty()).then_some(version)
+}
+
+fn version_line() -> String {
+    format!("ma {}", env!("CARGO_PKG_VERSION"))
+}
+
+fn platform_note() -> String {
+    match release_target() {
+        Some(target) => format!("built for {target}, requires {PLATFORM_REQUIRES}"),
+        None => format!(
+            "no prebuilt binary is published for this platform, requires {PLATFORM_REQUIRES}"
+        ),
     }
 }
 
@@ -2279,11 +2319,10 @@ fn install_update(api_base: &str, exe: &Path) -> Result<(String, String), String
             return Err(format!("update verification: {e}"));
         }
     };
-    let expected = format!("ma {version}");
-    if observed != expected {
+    if reported_version(&observed) != Some(version.as_str()) {
         cleanup();
         return Err(format!(
-            "update verification: extracted binary reported {}, expected {expected}",
+            "update verification: extracted binary reported {}, expected ma {version}",
             if observed.is_empty() {
                 "nothing".to_owned()
             } else {
@@ -2412,7 +2451,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if info.as_deref() == Some("--version") {
-        println!("ma {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", version_line());
+        eprintln!("ma: {}", platform_note());
         return ExitCode::SUCCESS;
     }
     #[cfg(unix)]
@@ -2564,9 +2604,10 @@ mod update_tests {
     }
 
     // A shell script stands in for the binary: install_update runs the candidate with
-    // --version, so what matters is what the candidate prints, not that it is really ma.
-    fn candidate(version: &str) -> Vec<u8> {
-        format!("#!/bin/sh\necho 'ma {version}'\n").into_bytes()
+    // --version, so what matters is what the candidate prints, not that it is really ma. The
+    // argument is the whole line, so a test can vary the annotation the way releases do.
+    fn candidate(version_line: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho '{version_line}'\n").into_bytes()
     }
 
     fn temp_dir() -> PathBuf {
@@ -2580,6 +2621,64 @@ mod update_tests {
         path
     }
 
+    // This is a compatibility guarantee, not formatting taste. A binary built before the
+    // platform note existed compares the whole stdout line for equality against `ma X.Y.Z`,
+    // so a line that grew a suffix would be rejected and that user could never update again.
+    #[test]
+    fn version_line_is_exactly_the_bare_form_older_binaries_compare_against() {
+        let line = version_line();
+        // Exactly two whitespace-separated fields: the program name and the version. A third
+        // field is what would break the equality check in an older binary.
+        let fields: Vec<_> = line.split_whitespace().collect();
+        assert_eq!(fields, ["ma", env!("CARGO_PKG_VERSION")], "{line}");
+        assert!(
+            !line.contains('('),
+            "no annotation may follow the version: {line}"
+        );
+    }
+
+    // The platform detail lives on stderr, so it must still reach the user.
+    #[test]
+    fn platform_note_states_the_target_and_what_it_requires() {
+        let note = platform_note();
+        let target = release_target().expect("tests run on a supported platform");
+        assert!(note.contains(target), "{note}");
+        assert!(note.contains("requires"), "{note}");
+        if cfg!(target_env = "gnu") {
+            assert!(note.contains("glibc>=2.34"), "{note}");
+        } else {
+            assert!(note.contains("macOS"), "{note}");
+        }
+    }
+
+    #[test]
+    fn reported_version_parses_the_bare_form_and_ignores_anything_after_it() {
+        assert_eq!(reported_version("ma 0.3.3"), Some("0.3.3"));
+        assert_eq!(reported_version("ma 0.3.4  "), Some("0.3.4"));
+        assert_eq!(reported_version("ma 0.3.4 extra words"), Some("0.3.4"));
+        assert_eq!(reported_version("ma"), None); // no version at all
+        assert_eq!(reported_version("not-ma 1.0.0"), None);
+        assert_eq!(reported_version(""), None);
+    }
+
+    #[test]
+    fn update_accepts_a_candidate_that_reports_the_bare_version() {
+        let dir = temp_dir();
+        let exe = dir.join("ma");
+        std::fs::write(&exe, b"old binary").unwrap();
+        let target = release_target().unwrap();
+        let member = format!("ma-9.9.9-{target}/ma");
+        // The candidate prints the bare form, exactly as a real build does.
+        let payload = candidate("ma 9.9.9");
+        let bytes = archive(&[(&member, payload.as_slice())]);
+        let (api, server) = serve("9.9.9", bytes);
+        let (version, _) = install_update(&api, &exe).expect("bare candidate must be accepted");
+        assert_eq!(version, "9.9.9");
+        assert_eq!(std::fs::read(&exe).unwrap(), payload);
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn version_comparison_orders_numerically() {
         assert!(newer_version("0.4.0", "0.3.1"));
@@ -2591,12 +2690,15 @@ mod update_tests {
 
     #[test]
     fn extraction_accepts_rooted_and_nested_layouts() {
-        let flat = archive(&[("ma", candidate("1.0.0").as_slice()), ("README.md", b"x")]);
+        let flat = archive(&[
+            ("ma", candidate("ma 1.0.0").as_slice()),
+            ("README.md", b"x"),
+        ]);
         assert!(!extract_member(&flat, "ma").unwrap().is_empty());
         let nested = archive(&[
             (
                 "ma-0.3.1-aarch64-apple-darwin/ma",
-                candidate("1.0.0").as_slice(),
+                candidate("ma 1.0.0").as_slice(),
             ),
             ("ma-0.3.1-aarch64-apple-darwin/README.md", b"x"),
         ]);
@@ -2648,7 +2750,7 @@ mod update_tests {
         let dir = temp_dir();
         let exe = dir.join("ma");
         std::fs::write(&exe, b"old binary").unwrap();
-        let payload = candidate("9.9.9");
+        let payload = candidate("ma 9.9.9");
         // The asset name and the archive layout both depend on the running platform, so they
         // are derived rather than hardcoded: this test runs on macOS and Linux CI alike.
         let target = release_target().expect("tests run on a supported platform");
@@ -2684,7 +2786,7 @@ mod update_tests {
         std::fs::write(&exe, b"old binary").unwrap();
         // The API says 9.9.9 but the artifact reports something else, which is exactly the
         // signature of a truncated download or an HTML error page saved to disk.
-        let bytes = archive(&[("ma", candidate("0.0.1").as_slice())]);
+        let bytes = archive(&[("ma", candidate("ma 0.0.1").as_slice())]);
         let (api, server) = serve("9.9.9", bytes);
         let error = install_update(&api, &exe).expect_err("mismatch must be refused");
         assert!(error.contains("verification"), "{error}");
