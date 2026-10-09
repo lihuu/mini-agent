@@ -13,6 +13,8 @@
 | macOS (Apple Silicon) | `ma-<版本>-aarch64-apple-darwin.tar.gz` |
 | Linux (x86_64) | `ma-<版本>-x86_64-unknown-linux-gnu.tar.gz` |
 
+macOS 产物要求 Big Sur（11.0）及以上。Linux 产物动态链接 glibc，实测在 glibc 2.34 及以上的发行版可用（Ubuntu 22.04+、Debian 12+），不支持 Alpine 等 musl 发行版。完整实测矩阵见[发版流程](docs/releasing.md#平台支持范围实测)。
+
 ```sh
 tar -xzf ma-<版本>-aarch64-apple-darwin.tar.gz
 mv ma-<版本>-aarch64-apple-darwin/ma ~/.local/bin/
@@ -77,7 +79,7 @@ ma --skills code-review,explain '评审并解释这些修改'
 
 默认拒绝常见写操作和 shell 网络命令，模型 API 请求始终允许。内置 Guard 是尽力而为的命令检查，**不是安全沙箱**；需要强隔离时使用容器或虚拟机。详见[安全说明](SECURITY.md)。
 
-完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。
+完整参数、配置文件和输出约定见[使用说明](docs/usage.md)，或运行 `ma --help`。发版与平台支持范围见[发版流程](docs/releasing.md)。
 
 `--skills` 按目录名从当前项目的 `.agents/skills/`、然后 `~/.agents/skills/` 查找 `SKILL.md`；项目优先，找不到或无法读取的跳过。不传此参数就不加载任何 skill。指定 skills 的完整指令会加入提示词，引用文件按需读取；自定义目录参数尚未支持。详见[skills 使用说明](docs/usage.md#skills)。
 
