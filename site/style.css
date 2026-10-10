@@ -227,15 +227,12 @@ p.lead { font-size: 1.1rem; color: #c9d3dd; }
   margin: 0 0 1rem;
 }
 
-/* scroll reveal */
-.reveal { opacity: 1; }
-.js .reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
-.js .reveal.in { opacity: 1; transform: none; }
+/* Sections are never hidden. An earlier version revealed them on scroll by
+   starting at opacity 0 and adding a class from JavaScript; anything that
+   stopped the observer from firing left the whole page below the hero
+   permanently blank. Content that needs script to become readable is content
+   that can be lost. */
 
-@media (prefers-reduced-motion: reduce) {
-  .js .reveal { opacity: 1; transform: none; transition: none; }
-  .caret { animation: none; }
-}
 
 /* ---------- comparison ---------- */
 
@@ -282,6 +279,15 @@ pre.code {
 pre.code .cmt { color: var(--dim); }
 .kbd-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem; margin-top: 1rem; }
 .kbd-row pre.code { margin: 0; flex: 1 1 22rem; }
+
+/* For blocks whose command is wider than the column: give the code the full
+   width and drop the copy button underneath. Side by side, a long line was
+   clipped mid-word at the right edge, which reads as a broken command. */
+.kbd-row--stack { flex-direction: column; align-items: stretch; }
+/* The shared rule's `flex: 1 1 22rem` is a *width* basis; in a column it would
+   become a height basis and stretch the block to 22rem tall. Size to content. */
+.kbd-row--stack pre.code { flex: 0 0 auto; white-space: pre-wrap; overflow-wrap: break-word; }
+.kbd-row--stack .copy { align-self: flex-end; min-height: 2.1rem; }
 
 .copy {
   font-family: var(--mono); font-size: .78rem;

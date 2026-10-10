@@ -92,7 +92,7 @@ recovery tiers, each one costing more information than the last.</span></span><s
   </section>
 
   <section id="what">
-    <div class="wrap reveal">
+    <div class="wrap">
       <p class="eyebrow">What it is</p>
       <h2>A model, available as one more command in your pipeline.</h2>
       <p class="lead">oneagent is a one-shot command-line agent for people who already live in a shell. Instead of a session you attach to, you run it like any other Unix command: <code>ma 'explain this project'</code>. The task comes from its arguments, and extra context can come from stdin (<code>git diff | ma 'summarize these changes'</code>). Both are sent to an OpenAI-compatible Chat Completions endpoint, and the model then runs shell commands with whatever host CLIs are already installed — <code>git</code>, <code>cargo</code>, <code>grep</code>, <code>curl</code>. oneagent takes the directory you started it in as its workspace, writes the final answer to stdout and the process log to stderr, so it composes with the rest of your pipeline. Common write operations and shell network commands are refused by default; <code>--write</code> and <code>--net</code> opt in, and <code>--skills</code> loads named <code>SKILL.md</code> directories into the prompt. No conversation state is kept between runs.</p>
@@ -101,7 +101,7 @@ recovery tiers, each one costing more information than the last.</span></span><s
   </section>
 
   <section id="vs">
-    <div class="wrap reveal">
+    <div class="wrap">
       <p class="eyebrow">How it differs</p>
       <h2>Not a session. A command.</h2>
       <p>Resident coding agents sit in your terminal and hold a conversation. oneagent runs once. That single difference decides which one belongs in a pipeline.</p>
@@ -124,7 +124,7 @@ recovery tiers, each one costing more information than the last.</span></span><s
   </section>
 
   <section id="install">
-    <div class="wrap reveal">
+    <div class="wrap">
       <p class="eyebrow">Install</p>
       <h2>One binary. Pick whichever path you already have.</h2>
 
@@ -132,7 +132,7 @@ recovery tiers, each one costing more information than the last.</span></span><s
         <div class="col">
           <h3>Prebuilt binary</h3>
           <p>No Rust toolchain needed. Download the artifact for your platform, unpack it, done.</p>
-          <div class="kbd-row">
+          <div class="kbd-row kbd-row--stack">
             <pre class="code">tar -xzf ma-&lt;version&gt;-aarch64-apple-darwin.tar.gz
 mv ma-&lt;version&gt;-aarch64-apple-darwin/ma ~/.local/bin/</pre>
             <button class="copy" data-copy="tar -xzf ma-&lt;version&gt;-aarch64-apple-darwin.tar.gz
@@ -163,7 +163,7 @@ export API_KEY='your-key'</pre>
   </section>
 
   <section id="usage">
-    <div class="wrap reveal">
+    <div class="wrap">
       <p class="eyebrow">Usage</p>
       <h2>Point it at a directory and ask.</h2>
       <p>oneagent uses the directory you started it in as its workspace. <code>-v</code> shows model text and command execution live; the final answer goes to stdout and the process log to stderr.</p>
@@ -194,7 +194,7 @@ ma --skills code-review,explain 'review and explain these changes'</pre>
   </section>
 
   <section id="faq">
-    <div class="wrap reveal">
+    <div class="wrap">
       <p class="eyebrow">FAQ</p>
       <h2>Questions people actually ask.</h2>
       <div class="faq">
@@ -223,7 +223,7 @@ ma --skills code-review,explain 'review and explain these changes'</pre>
   </section>
 
   <section class="final">
-    <div class="wrap reveal">
+    <div class="wrap">
       <h2>Put a model behind one command.</h2>
       <p class="lead">MIT licensed. One binary, no daemon, no framework.</p>
       <div class="actions">
@@ -247,7 +247,6 @@ ma --skills code-review,explain 'review and explain these changes'</pre>
 
 <script>
 // Progressive enhancement only — every word above is in the HTML already.
-document.documentElement.classList.add('js');
 
 // Copy buttons
 document.querySelectorAll('.copy').forEach(function (el) {
@@ -275,24 +274,6 @@ document.querySelectorAll('.copy').forEach(function (el) {
   });
 });
 
-// Scroll reveal — with a failsafe. The sections start hidden, so anything that
-// stops the observer from firing must not leave the page unreadable: whatever
-// has not been revealed by then is shown outright.
-var reveals = document.querySelectorAll('.reveal');
-function revealAll() {
-  reveals.forEach(function (el) { el.classList.add('in'); });
-}
-if ('IntersectionObserver' in window) {
-  var io = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
-    });
-  }, { rootMargin: '0px 0px -12% 0px', threshold: 0.05 });
-  reveals.forEach(function (el) { io.observe(el); });
-  setTimeout(revealAll, 1500);
-} else {
-  revealAll();
-}
 </script>
 </body>
 </html>
