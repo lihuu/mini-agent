@@ -1,6 +1,6 @@
 [package]
 name = "oneagent"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2024"
 rust-version = "1.85"
 description = "One-shot AI agent CLI in Rust: a single binary that drives your shell, pipes diffs and logs into any OpenAI-compatible model, and exits."
